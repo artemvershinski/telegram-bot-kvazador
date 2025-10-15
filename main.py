@@ -137,7 +137,7 @@ def forward_text_message(message):
     user_info += f"\n🆔 ID: {message.from_user.id}"
     user_info += f"\n⏰ {datetime.datetime.now().strftime('%d.%m.%Y %H:%M')}"
     
-    # Пересылаем сообщение тебе
+    # Пересылаем сообщение мне
     try:
         bot.send_message(ADMIN_ID, f"{user_info}\n\n📨 Сообщение:\n\n{message.text}")
         bot.send_message(message.chat.id, "✅ Сообщение отправлено администратору!")
@@ -203,30 +203,43 @@ def forward_contact_location(message):
 import requests
 
 def start_bot():
-    init_db()
-    print("🤖 Бот запущен...")
-    
-    while True:
-        try:
-            bot.infinity_polling(
-                timeout=60,
-                long_polling_timeout=60, 
-                logger_level="INFO",
-                allowed_updates=['message', 'callback_query']
-            )
-        except requests.exceptions.ConnectionError:
-            print("🔌 Обрыв связи... Переподключение через 10 сек")
-            time.sleep(10)
-        except telebot.apihelper.ApiTelegramException as e:
-            if "Conflict" in str(e):
-                print("⚠️ Другой экземпляр бота запущен... Ждем 30 сек")
-                time.sleep(30)
-            else:
-                print(f"❌ Telegram API ошибка: {e}")
+    """Функция для запуска бота с обработкой ошибок"""
+    try:
+        print("🔄 Инициализация базы данных...")
+        init_db()
+        
+        print("🔍 Проверка токена...")
+        if not BOT_TOKEN:
+            print("❌ BOT_TOKEN не найден!")
+            return
+        
+        print("🤖 Запуск Telegram бота...")
+        print(f"✅ Токен: {BOT_TOKEN[:10]}...")  # Первые 10 символов токена
+        
+        # Тестовый запрос к API Telegram
+        bot.get_me()
+        print("✅ Подключение к Telegram успешно!")
+        
+        print("🎯 Бот готов принимать сообщения...")
+        
+        # Запуск polling
+        while True:
+            try:
+                bot.infinity_polling(
+                    timeout=60, 
+                    long_polling_timeout=60,
+                    logger_level="INFO"
+                )
+            except Exception as e:
+                print(f"❌ Ошибка polling: {e}")
+                print("🔄 Перезапуск через 10 секунд...")
                 time.sleep(10)
-        except Exception as e:
-            print(f"❌ Неизвестная ошибка: {e}")
-            time.sleep(10)
+                
+    except Exception as e:
+        print(f"💥 Критическая ошибка при запуске: {e}")
+        print("🔄 Перезапуск через 30 секунд...")
+        time.sleep(30)
+        start_bot()  # Рекурсивный перезапуск
 
 if __name__ == "__main__":
     keep_alive()  # Запускаем Flask сервер для поддержания активности
