@@ -200,17 +200,32 @@ def forward_contact_location(message):
         print(f"Ошибка отправки контакта/локации: {e}")
         bot.send_message(message.chat.id, "❌ Ошибка отправки.")
 
+import requests
+
 def start_bot():
-    """Функция для запуска бота с обработкой ошибок"""
     init_db()
     print("🤖 Бот запущен...")
     
     while True:
         try:
-            bot.infinity_polling(timeout=60, long_polling_timeout=60)
+            bot.infinity_polling(
+                timeout=60,
+                long_polling_timeout=60, 
+                logger_level="INFO",
+                allowed_updates=['message', 'callback_query']
+            )
+        except requests.exceptions.ConnectionError:
+            print("🔌 Обрыв связи... Переподключение через 10 сек")
+            time.sleep(10)
+        except telebot.apihelper.ApiTelegramException as e:
+            if "Conflict" in str(e):
+                print("⚠️ Другой экземпляр бота запущен... Ждем 30 сек")
+                time.sleep(30)
+            else:
+                print(f"❌ Telegram API ошибка: {e}")
+                time.sleep(10)
         except Exception as e:
-            print(f"❌ Ошибка в боте: {e}")
-            print("🔄 Перезапуск через 10 секунд...")
+            print(f"❌ Неизвестная ошибка: {e}")
             time.sleep(10)
 
 if __name__ == "__main__":
