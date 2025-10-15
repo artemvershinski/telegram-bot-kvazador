@@ -7,7 +7,7 @@ from flask import Flask
 from threading import Thread
 import time
 
-# Flask app для поддержания активности
+# Flask для keep-alive
 app = Flask('')
 
 @app.route('/')
@@ -26,7 +26,7 @@ def keep_alive():
     t.daemon = True
     t.start()
 
-# Токен бота из переменных окружения
+# Telegram токен из переменных окружения
 BOT_TOKEN = os.environ.get('BOT_TOKEN')
 bot = telebot.TeleBot(BOT_TOKEN)
 
@@ -38,7 +38,6 @@ def init_db():
     conn.commit()
     conn.close()
 
-# Регистрация пользователя
 def register_user(user_id, username, first_name, last_name):
     conn = sqlite3.connect('users.db', check_same_thread=False)
     c = conn.cursor()
@@ -47,49 +46,53 @@ def register_user(user_id, username, first_name, last_name):
     conn.commit()
     conn.close()
 
-# Твой ID в Telegram (замени на свой)
-ADMIN_ID = 8401905691
+ADMIN_ID = 8401905691  # Твой ID
 
-# Словарь для отслеживания, кому ты отвечаешь
 user_reply_mode = {}
 
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
-    # Регистрируем пользователя
     register_user(message.from_user.id, 
                   message.from_user.username, 
                   message.from_user.first_name, 
                   message.from_user.last_name)
-    
-    # Приветственное сообщение
+
     welcome_text = """
 Привет. Я бот-пересыльщик сообщений для kvzdr.
-Для связи с kvzdr сначала вам необходимо  отправить сообщение (сколько потребуется) здесь. 
+Для связи с kvzdr сначала вам необходимо отправить сообщение (сколько потребуется) здесь. 
 Ответ может поступить через данного бота, либо вам в ЛС.
 
 Ваше сообщение будет доставлено ему от вашего имени.
 
 Сам kvzdr свяжется с вами как только заметит ваше сообщение в боте. Просто представьте что это чат с ним, а не какой-то чат с ботом-пересыльщиком сообщений.
     """
-    
-    # Создаем клавиатуру
+
     markup = ReplyKeyboardMarkup(resize_keyboard=True)
     markup.add(KeyboardButton("📞 Попросить связаться со мной."))
     bot.send_message(message.chat.id, welcome_text, reply_markup=markup)
+
+@bot.message_handler(func=lambda message: message.text == "📞 Попросить связаться со мной.")
+def handle_contact_request(message):
+    bot.send_message(message.chat.id, "✅ Ваш запрос на связь отправлен. Ожидайте ответа.")
+    bot.send_message(
+        ADMIN_ID,
+        f"📞 Пользователь {message.from_user.first_name} "
+        f"@{message.from_user.username or 'без username'} "
+        f"(ID: {message.from_user.id}) просит связаться."
+    )
 
 @bot.message_handler(commands=['reply'])
 def start_reply_mode(message):
     if message.from_user.id != ADMIN_ID:
         bot.send_message(message.chat.id, "❌ Эта команда только для администратора.")
         return
-    
+
     try:
-        # Формат: /reply user_id
         user_id = int(message.text.split()[1])
         user_reply_mode[ADMIN_ID] = user_id
-        bot.send_message(ADMIN_ID, f"🔹 Режим ответа включен для пользователя ID: {user_id}\nТеперь просто напиши сообщение, и оно будет отправлено этому пользователю.")
+        bot.send_message(ADMIN_ID, f"🔹 Режим ответа включен для пользователя ID: {user_id}")
     except (IndexError, ValueError):
-        bot.send_message(ADMIN_ID, "❌ Используй: /reply user_id\nНапример: /reply 123456789")
+        bot.send_message(ADMIN_ID, "❌ Используй: /reply user_id\nПример: /reply 123456789")
 
 @bot.message_handler(commands=['stop'])
 def stop_reply_mode(message):
@@ -100,17 +103,15 @@ def stop_reply_mode(message):
         else:
             bot.send_message(ADMIN_ID, "🔹 Режим ответа не был включен.")
 
-# Обработка сообщений от администратора для ответа пользователям
 @bot.message_handler(func=lambda message: message.from_user.id == ADMIN_ID and ADMIN_ID in user_reply_mode)
 def handle_admin_reply(message):
     if message.content_type != 'text':
         bot.send_message(ADMIN_ID, "❌ В режиме ответа можно отправлять только текст.")
         return
-    
+
     target_user_id = user_reply_mode[ADMIN_ID]
-    
+
     try:
-        # Отправляем сообщение пользователю
         bot.send_message(target_user_id, f"💌 Ответ от kvzdr:\n\n{message.text}")
         bot.send_message(ADMIN_ID, f"✅ Ответ отправлен пользователю ID: {target_user_id}")
     except Exception as e:
@@ -118,26 +119,24 @@ def handle_admin_reply(message):
 
 @bot.message_handler(content_types=['text'])
 def forward_text_message(message):
-    # Пропускаем команды
     if message.text.startswith('/'):
         return
-    
-    # Если это администратор и не в режиме ответа
+
+    if message.text == "📞 Попросить связаться со мной.":
+        return  # Обрабатывается отдельно
+
     if message.from_user.id == ADMIN_ID and ADMIN_ID not in user_reply_mode:
         bot.send_message(ADMIN_ID, "ℹ️ Чтобы ответить пользователю, используй команду /reply user_id")
         return
-    
-    # Формируем информацию об отправителе
+
     user_info = f"👤 От: {message.from_user.first_name}"
     if message.from_user.last_name:
         user_info += f" {message.from_user.last_name}"
     if message.from_user.username:
         user_info += f" (@{message.from_user.username})"
-    
     user_info += f"\n🆔 ID: {message.from_user.id}"
     user_info += f"\n⏰ {datetime.datetime.now().strftime('%d.%m.%Y %H:%M')}"
-    
-    # Пересылаем сообщение мне
+
     try:
         bot.send_message(ADMIN_ID, f"{user_info}\n\n📨 Сообщение:\n\n{message.text}")
         bot.send_message(message.chat.id, "✅ Сообщение отправлено администратору!")
@@ -153,11 +152,11 @@ def forward_media_message(message):
         user_info += f" (@{message.from_user.username})"
     user_info += f"\n🆔 ID: {message.from_user.id}"
     user_info += f"\n⏰ {datetime.datetime.now().strftime('%d.%m.%Y %H:%M')}"
-    
+
     caption = f"{user_info}\n\n"
     if message.caption:
         caption += f"📝 Подпись: {message.caption}"
-    
+
     try:
         if message.photo:
             bot.send_photo(ADMIN_ID, message.photo[-1].file_id, caption=caption)
@@ -169,7 +168,7 @@ def forward_media_message(message):
             bot.send_document(ADMIN_ID, message.document.file_id, caption=caption)
         elif message.audio:
             bot.send_audio(ADMIN_ID, message.audio.file_id, caption=caption)
-        
+
         bot.send_message(message.chat.id, "✅ Медиа-сообщение отправлено kvzdr!")
     except Exception as e:
         print(f"Ошибка отправки медиа: {e}")
@@ -182,51 +181,51 @@ def forward_contact_location(message):
         user_info += f" (@{message.from_user.username})"
     user_info += f"\n🆔 ID: {message.from_user.id}"
     user_info += f"\n⏰ {datetime.datetime.now().strftime('%d.%m.%Y %H:%M')}"
-    
+
     try:
         if message.contact:
-            bot.send_contact(ADMIN_ID, 
-                           message.contact.phone_number,
-                           message.contact.first_name,
-                           caption=f"{user_info}\n📞 Прислал контакт")
+            bot.send_contact(
+                ADMIN_ID,
+                message.contact.phone_number,
+                message.contact.first_name,
+            )
+            bot.send_message(ADMIN_ID, f"{user_info}\n📞 Прислал контакт")
+
         elif message.location:
-            bot.send_location(ADMIN_ID,
-                            message.location.latitude,
-                            message.location.longitude,
-                            caption=f"{user_info}\n📍 Прислал локацию")
-        
+            bot.send_location(
+                ADMIN_ID,
+                message.location.latitude,
+                message.location.longitude,
+            )
+            bot.send_message(ADMIN_ID, f"{user_info}\n📍 Прислал локацию")
+
         bot.send_message(message.chat.id, "✅ Данные отправлены kvzdr!")
     except Exception as e:
         print(f"Ошибка отправки контакта/локации: {e}")
         bot.send_message(message.chat.id, "❌ Ошибка отправки.")
 
-import requests
-
 def start_bot():
-    """Функция для запуска бота с обработкой ошибок"""
     try:
         print("🔄 Инициализация базы данных...")
         init_db()
-        
+
         print("🔍 Проверка токена...")
         if not BOT_TOKEN:
             print("❌ BOT_TOKEN не найден!")
             return
-        
+
         print("🤖 Запуск Telegram бота...")
-        print(f"✅ Токен: {BOT_TOKEN[:10]}...")  # Первые 10 символов токена
-        
-        # Тестовый запрос к API Telegram
+        print(f"✅ Токен: {BOT_TOKEN[:10]}...")
+
         bot.get_me()
         print("✅ Подключение к Telegram успешно!")
-        
         print("🎯 Бот готов принимать сообщения...")
-        
-        # Запуск polling
+
+        # Бесконечный polling с защитой от сбоев
         while True:
             try:
                 bot.infinity_polling(
-                    timeout=60, 
+                    timeout=60,
                     long_polling_timeout=60,
                     logger_level="INFO"
                 )
@@ -234,13 +233,13 @@ def start_bot():
                 print(f"❌ Ошибка polling: {e}")
                 print("🔄 Перезапуск через 10 секунд...")
                 time.sleep(10)
-                
+
     except Exception as e:
         print(f"💥 Критическая ошибка при запуске: {e}")
         print("🔄 Перезапуск через 30 секунд...")
         time.sleep(30)
-        start_bot()  # Рекурсивный перезапуск
+        start_bot()  # Рекурсивный перезапуск при фатальной ошибке
 
 if __name__ == "__main__":
-    keep_alive()  # Запускаем Flask сервер для поддержания активности
-    start_bot()   # Запускаем бота
+    keep_alive()  # Запуск Flask-сервера для keep-alive
+    start_bot()   # Запуск самого Telegram-бота
