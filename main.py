@@ -74,7 +74,7 @@ def send_welcome(message):
     
     # Создаем клавиатуру
     markup = ReplyKeyboardMarkup(resize_keyboard=True)
-    markup.add(KeyboardButton("📞 Попросить связаться со мной.")    
+    markup.add(KeyboardButton("📞 Попросить связаться со мной."))
     bot.send_message(message.chat.id, welcome_text, reply_markup=markup)
 
 @bot.message_handler(commands=['reply'])
