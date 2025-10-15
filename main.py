@@ -26,7 +26,7 @@ def keep_alive():
     t.daemon = True
     t.start()
 
-# Telegram токен из переменных окружения
+# Telegram токен
 BOT_TOKEN = os.environ.get('BOT_TOKEN')
 bot = telebot.TeleBot(BOT_TOKEN)
 
@@ -46,13 +46,15 @@ def register_user(user_id, username, first_name, last_name):
     conn.commit()
     conn.close()
 
-ADMIN_ID = 8401905691  # Твой ID
+# 👇 Убедись, что это именно int, как ты просил
+ADMIN_ID = 8401905691
 
 user_reply_mode = {}
 
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
-    register_user(message.from_user.id, 
+    user_id = int(message.from_user.id)
+    register_user(user_id, 
                   message.from_user.username, 
                   message.from_user.first_name, 
                   message.from_user.last_name)
@@ -69,41 +71,44 @@ def send_welcome(message):
 
     markup = ReplyKeyboardMarkup(resize_keyboard=True)
     markup.add(KeyboardButton("📞 Попросить связаться со мной."))
-    bot.send_message(message.chat.id, welcome_text, reply_markup=markup)
+    bot.send_message(user_id, welcome_text, reply_markup=markup)
 
 @bot.message_handler(func=lambda message: message.text == "📞 Попросить связаться со мной.")
 def handle_contact_request(message):
-    bot.send_message(message.chat.id, "✅ Ваш запрос на связь отправлен. Ожидайте ответа.")
+    user_id = int(message.from_user.id)
+    bot.send_message(user_id, "✅ Ваш запрос на связь отправлен. Ожидайте ответа.")
     bot.send_message(
         ADMIN_ID,
         f"📞 Пользователь {message.from_user.first_name} "
         f"@{message.from_user.username or 'без username'} "
-        f"(ID: {message.from_user.id}) просит связаться."
+        f"(ID: {user_id}) просит связаться."
     )
 
 @bot.message_handler(commands=['reply'])
 def start_reply_mode(message):
-    if message.from_user.id != ADMIN_ID:
-        bot.send_message(message.chat.id, "❌ Эта команда только для администратора.")
+    user_id = int(message.from_user.id)
+    if user_id != ADMIN_ID:
+        bot.send_message(user_id, "❌ Эта команда только для администратора.")
         return
 
     try:
-        user_id = int(message.text.split()[1])
-        user_reply_mode[ADMIN_ID] = user_id
-        bot.send_message(ADMIN_ID, f"🔹 Режим ответа включен для пользователя ID: {user_id}")
+        target_id = int(message.text.split()[1])
+        user_reply_mode[ADMIN_ID] = target_id
+        bot.send_message(ADMIN_ID, f"🔹 Режим ответа включен для пользователя ID: {target_id}")
     except (IndexError, ValueError):
         bot.send_message(ADMIN_ID, "❌ Используй: /reply user_id\nПример: /reply 123456789")
 
 @bot.message_handler(commands=['stop'])
 def stop_reply_mode(message):
-    if message.from_user.id == ADMIN_ID:
+    user_id = int(message.from_user.id)
+    if user_id == ADMIN_ID:
         if ADMIN_ID in user_reply_mode:
             del user_reply_mode[ADMIN_ID]
             bot.send_message(ADMIN_ID, "🔹 Режим ответа выключен.")
         else:
             bot.send_message(ADMIN_ID, "🔹 Режим ответа не был включен.")
 
-@bot.message_handler(func=lambda message: message.from_user.id == ADMIN_ID and ADMIN_ID in user_reply_mode)
+@bot.message_handler(func=lambda message: int(message.from_user.id) == ADMIN_ID and ADMIN_ID in user_reply_mode)
 def handle_admin_reply(message):
     if message.content_type != 'text':
         bot.send_message(ADMIN_ID, "❌ В режиме ответа можно отправлять только текст.")
@@ -119,13 +124,15 @@ def handle_admin_reply(message):
 
 @bot.message_handler(content_types=['text'])
 def forward_text_message(message):
+    user_id = int(message.from_user.id)
+
     if message.text.startswith('/'):
         return
 
     if message.text == "📞 Попросить связаться со мной.":
-        return  # Обрабатывается отдельно
+        return  # Уже обрабатывается
 
-    if message.from_user.id == ADMIN_ID and ADMIN_ID not in user_reply_mode:
+    if user_id == ADMIN_ID and ADMIN_ID not in user_reply_mode:
         bot.send_message(ADMIN_ID, "ℹ️ Чтобы ответить пользователю, используй команду /reply user_id")
         return
 
@@ -134,23 +141,25 @@ def forward_text_message(message):
         user_info += f" {message.from_user.last_name}"
     if message.from_user.username:
         user_info += f" (@{message.from_user.username})"
-    user_info += f"\n🆔 ID: {message.from_user.id}"
+    user_info += f"\n🆔 ID: {user_id}"
     user_info += f"\n⏰ {datetime.datetime.now().strftime('%d.%m.%Y %H:%M')}"
 
     try:
         bot.send_message(ADMIN_ID, f"{user_info}\n\n📨 Сообщение:\n\n{message.text}")
-        bot.send_message(message.chat.id, "✅ Сообщение отправлено администратору!")
+        bot.send_message(user_id, "✅ Сообщение отправлено администратору!")
     except:
-        bot.send_message(message.chat.id, "❌ Ошибка отправки. Администратор не найден.")
+        bot.send_message(user_id, "❌ Ошибка отправки. Администратор не найден.")
 
 @bot.message_handler(content_types=['photo', 'voice', 'video', 'document', 'audio'])
 def forward_media_message(message):
+    user_id = int(message.from_user.id)
+
     user_info = f"👤 От: {message.from_user.first_name}"
     if message.from_user.last_name:
         user_info += f" {message.from_user.last_name}"
     if message.from_user.username:
         user_info += f" (@{message.from_user.username})"
-    user_info += f"\n🆔 ID: {message.from_user.id}"
+    user_info += f"\n🆔 ID: {user_id}"
     user_info += f"\n⏰ {datetime.datetime.now().strftime('%d.%m.%Y %H:%M')}"
 
     caption = f"{user_info}\n\n"
@@ -169,17 +178,19 @@ def forward_media_message(message):
         elif message.audio:
             bot.send_audio(ADMIN_ID, message.audio.file_id, caption=caption)
 
-        bot.send_message(message.chat.id, "✅ Медиа-сообщение отправлено kvzdr!")
+        bot.send_message(user_id, "✅ Медиа-сообщение отправлено kvzdr!")
     except Exception as e:
         print(f"Ошибка отправки медиа: {e}")
-        bot.send_message(message.chat.id, "❌ Ошибка отправки медиа.")
+        bot.send_message(user_id, "❌ Ошибка отправки медиа.")
 
 @bot.message_handler(content_types=['contact', 'location'])
 def forward_contact_location(message):
+    user_id = int(message.from_user.id)
+
     user_info = f"👤 От: {message.from_user.first_name}"
     if message.from_user.username:
         user_info += f" (@{message.from_user.username})"
-    user_info += f"\n🆔 ID: {message.from_user.id}"
+    user_info += f"\n🆔 ID: {user_id}"
     user_info += f"\n⏰ {datetime.datetime.now().strftime('%d.%m.%Y %H:%M')}"
 
     try:
@@ -190,7 +201,6 @@ def forward_contact_location(message):
                 message.contact.first_name,
             )
             bot.send_message(ADMIN_ID, f"{user_info}\n📞 Прислал контакт")
-
         elif message.location:
             bot.send_location(
                 ADMIN_ID,
@@ -199,10 +209,10 @@ def forward_contact_location(message):
             )
             bot.send_message(ADMIN_ID, f"{user_info}\n📍 Прислал локацию")
 
-        bot.send_message(message.chat.id, "✅ Данные отправлены kvzdr!")
+        bot.send_message(user_id, "✅ Данные отправлены kvzdr!")
     except Exception as e:
         print(f"Ошибка отправки контакта/локации: {e}")
-        bot.send_message(message.chat.id, "❌ Ошибка отправки.")
+        bot.send_message(user_id, "❌ Ошибка отправки.")
 
 def start_bot():
     try:
@@ -242,4 +252,4 @@ def start_bot():
 
 if __name__ == "__main__":
     keep_alive()  # Запуск Flask-сервера для keep-alive
-    start_bot()   # Запуск самого Telegram-бота
+    start_bot()   # Запуск самого Telegram-ботач
