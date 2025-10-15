@@ -27,8 +27,7 @@ def keep_alive():
     t.start()
 
 # Токен бота из переменных окружения
-BOT_TOKEN = os.environ.get('BOT_TOKEN', '8461835507:AAGRTwGpyNgDVsUinx1j8t_g6mE2suYpC4Y')
-
+BOT_TOKEN = os.environ.get('BOT_TOKEN')
 bot = telebot.TeleBot(BOT_TOKEN)
 
 def init_db():
