@@ -108,7 +108,7 @@ if bot:
                           message.from_user.last_name)
 
             welcome_text = (
-                "Привет. Я бот-пересыльщик сообщений для kvzdr.\n\n"
+                "Привет. Я бот-пересыльщик сообщений для kvazador.\n\n"
                 "Для связи с kvzdr сначала вам необходимо отправить сообщение (сколько потребуется) здесь. "
                 "Ответ может поступить через данного бота, либо вам в ЛС.\n\n"
                 "Ваше сообщение будет доставлено ему от вашего имени.\n\n"
@@ -185,7 +185,7 @@ if bot:
                 return
 
             try:
-                bot.send_message(target_user_id, f"💌 Ответ от kvzdr:\n\n{message.text}")
+                bot.send_message(target_user_id, f"💌 Поступил ответ от kvazador:\n\n{message.text}")
                 bot.send_message(ADMIN_ID, f"✅ Ответ отправлен пользователю ID: {target_user_id}")
             except Exception as e:
                 logger.exception("Failed to send admin reply to %s: %s", target_user_id, e)
@@ -219,11 +219,11 @@ if bot:
             user_info += f"\n⏰ {datetime.datetime.now().strftime('%d.%m.%Y %H:%M')}"
 
             bot.send_message(ADMIN_ID, f"{user_info}\n\n📨 Сообщение:\n\n{message.text}")
-            bot.send_message(user_id, "✅ Сообщение отправлено администратору!")
+            bot.send_message(user_id, "✅ Сообщение отправлено kvazador!")
         except Exception as e:
             logger.exception("Failed to forward text message from %s: %s", getattr(message, "from_user", None), e)
             try:
-                bot.send_message(user_id, "❌ Ошибка отправки. Администратор не найден.")
+                bot.send_message(user_id, "❌ Ошибка отправки. Пользователь kvazador не найден.")
             except Exception:
                 logger.exception("Also failed to notify user about forwarding error.")
 
@@ -259,7 +259,7 @@ if bot:
                 # На всякий случай — если тип не покрыт
                 bot.send_message(ADMIN_ID, f"{user_info}\n📨 Прислал медиа, но тип не определён.")
 
-            bot.send_message(user_id, "✅ Медиа-сообщение отправлено kvzdr!")
+            bot.send_message(user_id, "✅ Медиа-сообщение отправлено kvazador!")
         except Exception as e:
             logger.exception("Ошибка отправки медиа: %s", e)
             try:
@@ -297,7 +297,7 @@ if bot:
             else:
                 bot.send_message(ADMIN_ID, f"{user_info}\n📨 Прислал контакт/локацию, но детали отсутствуют.")
 
-            bot.send_message(user_id, "✅ Данные отправлены kvzdr!")
+            bot.send_message(user_id, "✅ Данные отправлены kvazador!")
         except Exception as e:
             logger.exception("Ошибка отправки контакта/локации: %s", e)
             try:
