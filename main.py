@@ -324,7 +324,7 @@ if bot:
             user_id = int(message.from_user.id)
             
             if not is_main_admin(user_id):
-                bot.send_message(user_id, "❌ Эта команда только для ГА
+                bot.send_message(user_id, "❌ Эта команда только для ГА")
 
             parts = message.text.split()
             if len(parts) < 2:
