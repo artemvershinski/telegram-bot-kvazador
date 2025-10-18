@@ -370,13 +370,13 @@ if bot:
                     bot.send_message(user_id, f"📭 Логов администраторов за последние {days} дней не найдено.")
                 return
 
-            # Формируем статистику
+            # Формируем текст логов
             if target_admin_id:
                 log_text = f"📊 Логи администратора {target_admin_id} за последние {days} дней:\n\n"
             else:
                 log_text = f"📊 Логи всех администраторов за последние {days} дней:\n\n"
 
-            # Группируем логи по датам для лучшей читаемости
+            # Группируем логи по датам
             date_groups = {}
             for log in logs:
                 try:
@@ -387,24 +387,92 @@ if bot:
                 except:
                     continue
 
-            # Отправляем логи сгруппированно по датам
+            # Обрабатываем логи для каждого дня
             for date, date_logs in sorted(date_groups.items(), reverse=True):
-                date_log_text = f"📅 {date}:\n"
+                log_text += f"📅 {date}:\n"
                 
                 for log in date_logs:
-                    # Убираем временную метку для компактности
+                    # Парсим лог
                     log_parts = log.split(' - ', 2)
                     if len(log_parts) >= 3:
                         time_part = log_parts[0].split(' ')[1][:8]  # Берем только время
+                        admin_part = log_parts[1]
                         action_part = log_parts[2]
-                        date_log_text += f"🕒 {time_part} - {action_part}\n"
+                        
+                        # Извлекаем информацию об админе
+                        admin_info = admin_part.replace('ADMIN ', '')
+                        
+                        # Форматируем действие
+                        formatted_action = action_part
+                        
+                        # Убираем логирование включения/выключения режима ответа
+                        if "включение режима ответа" in action_part or "выключение режима ответа" in action_part:
+                            continue
+                        
+                        # Форматируем отправку ответа пользователю
+                        if "отправка ответа пользователю" in action_part:
+                            # Парсим информацию об ответе
+                            if "пользователь:" in action_part and "ответ:" in action_part:
+                                user_part = action_part.split("пользователь: ")[1].split(" | ")[0]
+                                response_text = action_part.split("ответ: ")[1]
+                                
+                                # Пытаемся получить username админа
+                                admin_id = admin_info.split(' ')[0]
+                                admin_username = "Неизвестно"
+                                try:
+                                    admin_chat = bot.get_chat(int(admin_id))
+                                    admin_username = f"@{admin_chat.username}" if admin_chat.username else admin_chat.first_name
+                                except:
+                                    admin_username = f"ID: {admin_id}"
+                                
+                                # Пытаемся получить username пользователя
+                                target_username = "Неизвестно"
+                                try:
+                                    target_chat = bot.get_chat(int(user_part))
+                                    target_username = f"@{target_chat.username}" if target_chat.username else target_chat.first_name
+                                except:
+                                    target_username = f"ID: {user_part}"
+                                
+                                formatted_action = f"Администратор {admin_username} ответил пользователю {target_username}\nОтвет: {response_text}"
+                        
+                        # Форматируем добавление администратора
+                        elif "добавление администратора" in action_part:
+                            if "новый админ:" in action_part:
+                                new_admin_info = action_part.split("новый админ: ")[1]
+                                formatted_action = f"добавление администратора - новый админ: {new_admin_info}"
+                        
+                        # Форматируем удаление администратора  
+                        elif "удаление администратора" in action_part:
+                            if "удален админ:" in action_part:
+                                removed_admin_id = action_part.split("удален админ: ")[1]
+                                formatted_action = f"удаление администратора - удален админ: {removed_admin_id}"
+                        
+                        # Форматируем рассылку сообщений
+                        elif "рассылка сообщений" in action_part:
+                            if "получателей:" in action_part:
+                                stats = action_part.split("рассылка сообщений - ")[1]
+                                formatted_action = f"рассылка сообщений - {stats}"
+                        
+                        # Форматируем просмотр статистики
+                        elif "просмотр статистики" in action_part:
+                            formatted_action = "просмотр статистики"
+                        
+                        # Форматируем просмотр списка пользователей
+                        elif "просмотр списка пользователей" in action_part:
+                            formatted_action = "просмотр списка пользователей"
+                        
+                        # Форматируем просмотр списка администраторов
+                        elif "просмотр списка администраторов" in action_part:
+                            formatted_action = "просмотр списка администраторов"
+                        
+                        log_text += f"{time_part} - {formatted_action}\n"
                 
+                log_text += "\n"
+
                 # Если сообщение становится слишком длинным, отправляем часть
-                if len(log_text + date_log_text) > 4000:
+                if len(log_text) > 3500:
                     bot.send_message(user_id, log_text)
-                    log_text = date_log_text
-                else:
-                    log_text += date_log_text + "\n"
+                    log_text = ""
 
             if log_text:
                 bot.send_message(user_id, log_text)
@@ -412,11 +480,12 @@ if bot:
             # Статистика
             bot.send_message(user_id, f"📈 Всего записей: {len(logs)}")
 
-            # Логируем запрос логов
-            admin_name = f"{message.from_user.first_name} (@{message.from_user.username})" if message.from_user.username else message.from_user.first_name
-            action = f"просмотр логов за {days} дней"
-            target_info = f"админ {target_admin_id}" if target_admin_id else "все админы"
-            log_admin_action(user_id, admin_name, action, target_info)
+            # Логируем запрос логов (только для главного админа)
+            if is_main_admin(user_id):
+                admin_name = f"{message.from_user.first_name} (@{message.from_user.username})" if message.from_user.username else message.from_user.first_name
+                action = f"просмотр логов за {days} дней"
+                target_info = f"админ {target_admin_id}" if target_admin_id else "все админы"
+                log_admin_action(user_id, admin_name, action, target_info)
             
         except Exception:
             logger.exception("Error in /adminlogs handler: %s", message)
@@ -473,7 +542,7 @@ if bot:
                         admin_actions[admin_id] += 1
                         
                         # Считаем типы действий
-                        action_type = action_part.split(' ')[0]
+                        action_type = action_part.split(' - ')[0] if ' - ' in action_part else action_part
                         if action_type not in action_types:
                             action_types[action_type] = 0
                         action_types[action_type] += 1
@@ -486,7 +555,15 @@ if bot:
             
             stats_text += "👥 Активность по администраторам:\n"
             for admin_id, count in sorted(admin_actions.items(), key=lambda x: x[1], reverse=True):
-                stats_text += f"• ID {admin_id}: {count} действий\n"
+                # Пытаемся получить имя админа
+                admin_name = "Неизвестно"
+                try:
+                    admin_chat = bot.get_chat(int(admin_id))
+                    admin_name = f"@{admin_chat.username}" if admin_chat.username else admin_chat.first_name
+                except:
+                    admin_name = f"ID: {admin_id}"
+                
+                stats_text += f"• {admin_name}: {count} действий\n"
             
             stats_text += "\n📋 Типы действий:\n"
             for action_type, count in sorted(action_types.items(), key=lambda x: x[1], reverse=True):
@@ -748,7 +825,7 @@ if bot:
         except Exception:
             logger.exception("Error in /sendall handler: %s", message)
 
-    # ==================== ОСТАЛЬНЫЕ ОБРАБОТЧИКИ (без изменений) ====================
+    # ==================== ОСТАЛЬНЫЕ ОБРАБОТЧИКИ ====================
 
     @bot.message_handler(func=lambda message: message.text == "📞 Попросить связаться со мной.")
     def handle_contact_request(message):
@@ -814,9 +891,7 @@ if bot:
             user_reply_mode[user_id] = target_id
             bot.send_message(user_id, f"🔹 Режим ответа включен для пользователя ID: {target_id}")
             
-            # Логируем действие
-            admin_name = f"{message.from_user.first_name} (@{message.from_user.username})" if message.from_user.username else message.from_user.first_name
-            log_admin_action(user_id, admin_name, "включение режима ответа", f"пользователь: {target_id}")
+            # НЕ логируем включение режима ответа
             
         except Exception:
             logger.exception("Error in /reply handler: %s", message)
@@ -830,9 +905,7 @@ if bot:
                     del user_reply_mode[user_id]
                     bot.send_message(user_id, "🔹 Режим ответа выключен.")
                     
-                    # Логируем действие
-                    admin_name = f"{message.from_user.first_name} (@{message.from_user.username})" if message.from_user.username else message.from_user.first_name
-                    log_admin_action(user_id, admin_name, "выключение режима ответа")
+                    # НЕ логируем выключение режима ответа
                 else:
                     bot.send_message(user_id, "🔹 Режим ответа не был включен.")
         except Exception:
@@ -852,12 +925,13 @@ if bot:
                 return
 
             try:
+                # Отправляем ответ пользователю
                 bot.send_message(target_user_id, f"💌 Поступил ответ от kvazador:\n\n{message.text}")
                 bot.send_message(user_id, f"✅ Ответ отправлен пользователю ID: {target_user_id}")
                 
-                # Логируем действие
+                # Логируем отправку ответа с текстом
                 admin_name = f"{message.from_user.first_name} (@{message.from_user.username})" if message.from_user.username else message.from_user.first_name
-                log_admin_action(user_id, admin_name, "отправка ответа пользователю", f"пользователь: {target_user_id}")
+                log_admin_action(user_id, admin_name, f"отправка ответа пользователю - пользователь: {target_user_id} | ответ: {message.text}")
                 
             except Exception as e:
                 logger.exception("Failed to send admin reply to %s: %s", target_user_id, e)
