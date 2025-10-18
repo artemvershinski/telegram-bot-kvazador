@@ -757,7 +757,7 @@ if bot:
                 return
 
             if remove_admin(target_id):
-                bot.send_message(user_id, f"✅ Администратор (ID: {target_id}) удален.")
+                bot.send_message(ADMIN_ID, f"✅ Администратор (ID: {target_id}) удален.")
                 
                 # Логируем действие
                 admin_name = f"{message.from_user.first_name} (@{message.from_user.username})" if message.from_user.username else message.from_user.first_name
