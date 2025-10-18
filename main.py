@@ -10,7 +10,7 @@ from threading import Thread
 
 from flask import Flask
 import telebot
-from telebot.types import ReplyKeyboardMarkup, KeyboardButton
+from telebot.types import ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove
 
 # ----------------------------
 # Настройка логирования
@@ -27,6 +27,50 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # ----------------------------
+# Ограничение времени между сообщениями (5 секунд)
+# ----------------------------
+user_last_message_time = {}
+MESSAGE_COOLDOWN = 5  # секунд
+
+# Ограничение для кнопки (30 секунд)
+button_cooldown_users = {}
+BUTTON_COOLDOWN = 30  # секунд
+
+def check_cooldown(user_id):
+    """Проверяет кулдаун и возвращает оставшееся время"""
+    current_time = time.time()
+    last_time = user_last_message_time.get(user_id, 0)
+    
+    time_passed = current_time - last_time
+    if time_passed < MESSAGE_COOLDOWN:
+        return MESSAGE_COOLDOWN - time_passed
+    
+    user_last_message_time[user_id] = current_time
+    return 0
+
+def check_button_cooldown(user_id):
+    """Проверяет кулдаун для кнопки и возвращает оставшееся время"""
+    current_time = time.time()
+    last_time = button_cooldown_users.get(user_id, 0)
+    
+    time_passed = current_time - last_time
+    if time_passed < BUTTON_COOLDOWN:
+        return BUTTON_COOLDOWN - time_passed
+    
+    button_cooldown_users[user_id] = current_time
+    return 0
+
+def restore_button(user_id):
+    """Восстанавливает кнопку через 30 секунд"""
+    time.sleep(BUTTON_COOLDOWN)
+    try:
+        markup = ReplyKeyboardMarkup(resize_keyboard=True)
+        markup.add(KeyboardButton("📞 Попросить связаться со мной."))
+        bot.send_message(user_id, "✅ Кнопка запроса связи снова доступна!", reply_markup=markup)
+    except Exception as e:
+        logger.error(f"Failed to restore button for user {user_id}: {e}")
+
+# ----------------------------
 # Flask keep-alive
 # ----------------------------
 app = Flask(__name__)
@@ -40,7 +84,7 @@ def health():
     return "OK", 200
 
 def run_flask():
-    # В Render обычно WSGI контейнер, но для keep-alive запустим встроенный сервер в отдельном потоке
+    # В Render обычно WSGI контейнер, но для keep-alive  встроенный сервер в отдельном потоке
     try:
         app.run(host='0.0.0.0', port=int(os.environ.get("PORT", 8080)))
     except Exception as e:
@@ -51,16 +95,13 @@ def keep_alive():
     t.start()
     logger.info("Flask keep-alive thread started.")
 
-# ----------------------------
 # Бот и база данных
-# ----------------------------
+
 BOT_TOKEN = os.environ.get('BOT_TOKEN')
 if not BOT_TOKEN:
     logger.error("BOT_TOKEN not found in environment. Please set BOT_TOKEN.")
-# ИД админа: можно взять из env или оставить как литерал
 ADMIN_ID = int(os.environ.get("ADMIN_ID", "8401905691"))
 
-# Инициализируем бот (объект TeleBot)
 bot = telebot.TeleBot(BOT_TOKEN) if BOT_TOKEN else None
 
 DB_PATH = os.environ.get("DB_PATH", "users.db")
@@ -91,7 +132,6 @@ def register_user(user_id, username, first_name, last_name):
     except Exception:
         logger.exception("Failed to register user %s", user_id)
 
-# Режим ответа администратора: map admin_id -> target_user_id
 user_reply_mode = {}
 
 # ----------------------------
@@ -125,13 +165,36 @@ if bot:
     def handle_contact_request(message):
         try:
             user_id = int(message.from_user.id)
-            bot.send_message(user_id, "✅ Ваш запрос на связь отправлен. Ожидайте ответа.")
+            
+            # Проверка кулдауна для кнопки
+            cooldown_remaining = check_button_cooldown(user_id)
+            if cooldown_remaining > 0:
+                bot.send_message(
+                    user_id, 
+                    f"⏳ Кнопка будет доступна через {int(cooldown_remaining)} секунд",
+                    reply_markup=ReplyKeyboardRemove()
+                )
+                return
+            
+            # Убираем кнопку на 30 секунд
+            bot.send_message(
+                user_id, 
+                "✅ Ваш запрос на связь отправлен. Ожидайте ответа.\n\n"
+                f"🕒 Кнопка снова появится через {BUTTON_COOLDOWN} секунд",
+                reply_markup=ReplyKeyboardRemove()
+            )
+            
+            # Отправляем уведомление админу
             bot.send_message(
                 ADMIN_ID,
                 f"📞 Пользователь {message.from_user.first_name} "
                 f"@{message.from_user.username or 'без username'} "
                 f"(ID: {user_id}) просит связаться."
             )
+            
+            # Запускаем восстановление кнопки через 30 секунд
+            Thread(target=restore_button, args=(user_id,), daemon=True).start()
+            
         except Exception:
             logger.exception("Error in contact request handler: %s", message)
 
@@ -204,7 +267,17 @@ if bot:
 
             # Специальная клавиша уже обрабатывается отдельно
             if message.text == "📞 Попросить связаться со мной.":
-                return
+                return handle_contact_request(message)
+
+            # Проверка кулдауна (кроме админа)
+            if user_id != ADMIN_ID:
+                cooldown_remaining = check_cooldown(user_id)
+                if cooldown_remaining > 0:
+                    bot.send_message(
+                        user_id, 
+                        f"⏳ Пожалуйста, подождите {int(cooldown_remaining)} секунд перед отправкой следующего сообщения."
+                    )
+                    return
 
             if user_id == ADMIN_ID and ADMIN_ID not in user_reply_mode:
                 bot.send_message(ADMIN_ID, "ℹ️ Чтобы ответить пользователю, используй команду /reply user_id")
@@ -231,6 +304,16 @@ if bot:
     def forward_media_message(message):
         try:
             user_id = int(message.from_user.id)
+
+            # Проверка кулдауна (кроме админа)
+            if user_id != ADMIN_ID:
+                cooldown_remaining = check_cooldown(user_id)
+                if cooldown_remaining > 0:
+                    bot.send_message(
+                        user_id, 
+                        f"⏳ Пожалуйста, подождите {int(cooldown_remaining)} секунд перед отправкой следующего сообщения."
+                    )
+                    return
 
             user_info = f"👤 От: {message.from_user.first_name}"
             if message.from_user.last_name:
@@ -272,6 +355,16 @@ if bot:
         try:
             user_id = int(message.from_user.id)
 
+            # Проверка кулдауна (кроме админа)
+            if user_id != ADMIN_ID:
+                cooldown_remaining = check_cooldown(user_id)
+                if cooldown_remaining > 0:
+                    bot.send_message(
+                        user_id, 
+                        f"⏳ Пожалуйста, подождите {int(cooldown_remaining)} секунд перед отправкой следующего сообщения."
+                    )
+                    return
+
             user_info = f"👤 От: {message.from_user.first_name}"
             if message.from_user.username:
                 user_info += f" (@{message.from_user.username})"
@@ -308,6 +401,7 @@ if bot:
 # ----------------------------
 # Основной цикл запуска бота
 # ----------------------------
+
 def start_bot_loop():
     """Запускает бота и перезапускает при ошибках (без рекурсии)."""
     if not bot:
