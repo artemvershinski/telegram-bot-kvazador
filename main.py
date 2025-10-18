@@ -1,9 +1,6 @@
 #!/usr/bin/env python3
 # coding: utf-8
-# telebot @kvzdr_bot | version: raw 1.1 | upd reason: added admin system and broadcast
-'''
-telebot @kvzdr_bot | version: raw 1.2 | upd reason: added admin system, broadcast, and statistics
-'''
+
 import os
 import time
 import logging
@@ -256,7 +253,7 @@ if bot:
                 "Для связи с kvazador сначала вам необходимо отправить сообщение (сколько потребуется) здесь. "
                 "Ответ может поступить через данного бота, либо вам в ЛС.\n\n"
                 "Ваше сообщение будет доставлено ему от вашего имени.\n\n"
-                "Сам kvazador свяжется с вами как только заметит ваше сообщение в боте. Просто представьте что это чат с ним, а не какой-то чат с бот-пересыльщиком сообщений."
+                "Сам kvazador свяжется с вами как только заметит ваше сообщение в боте. "
             )
 
             markup = ReplyKeyboardMarkup(resize_keyboard=True)
@@ -265,7 +262,7 @@ if bot:
         except Exception:
             logger.exception("Error in /start handler for message: %s", message)
 
-    # ==================== НОВЫЕ КОМАНДЫ: СИСТЕМА АДМИНИСТРИРОВАНИЯ ====================
+    # ==================== СИСТЕМА АДМИНИСТРИРОВАНИЯ ====================
 
     @bot.message_handler(commands=['addadmin'])
     def add_admin_command(message):
@@ -274,7 +271,7 @@ if bot:
             user_id = int(message.from_user.id)
             
             if not is_main_admin(user_id):
-                bot.send_message(user_id, "❌ Эта команда только для главного администратора.")
+                bot.send_message(user_id, "❌ Эта команда только для ГА.")
                 return
 
             parts = message.text.split()
@@ -290,7 +287,7 @@ if bot:
 
             # Нельзя добавить самого себя (главный админ уже есть)
             if target_id == user_id:
-                bot.send_message(user_id, "❌ Вы уже главный администратор.")
+                bot.send_message(user_id, "❌ Вы уже ГА.")
                 return
 
             # Получаем информацию о пользователе
@@ -327,8 +324,7 @@ if bot:
             user_id = int(message.from_user.id)
             
             if not is_main_admin(user_id):
-                bot.send_message(user_id, "❌ Эта команда только для главного администратора.")
-                return
+                bot.send_message(user_id, "❌ Эта команда только для ГА
 
             parts = message.text.split()
             if len(parts) < 2:
@@ -475,7 +471,7 @@ if bot:
             
             for user in users:
                 try:
-                    bot.send_message(user[0], f"📢 Рассылка от администратора:\n\n{broadcast_text}")
+                    bot.send_message(user[0], f"{broadcast_text}")
                     success_count += 1
                     time.sleep(0.1)  # Задержка чтобы не превысить лимиты Telegram
                 except Exception as e:
@@ -510,7 +506,7 @@ if bot:
             bot.send_message(
                 user_id, 
                 "✅ Ваш запрос на связь отправлен. Ожидайте ответа.\n\n"
-                f"🕒 Кнопка снова появится через {BUTTON_COOLDOWN} секунд",
+                f"🕒 Кнопка связи появится снова через {BUTTON_COOLDOWN} секунд",
                 reply_markup=ReplyKeyboardRemove()
             )
             
