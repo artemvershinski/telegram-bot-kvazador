@@ -1,2 +1,2 @@
 # telegram-bot-kvazador
-just testing 
+tg bot: @kvzdr_bot
