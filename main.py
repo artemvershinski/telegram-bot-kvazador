@@ -274,8 +274,18 @@ def get_admin_logs(admin_id=None, days=30):
                         
                         # Если указан конкретный админ, фильтруем по нему
                         if admin_id:
+                            # Ищем по ID админа в формате "ADMIN {admin_id}"
                             if f"ADMIN {admin_id}" in log_data:
                                 logs.append(line.strip())
+                            # Дополнительно ищем по username в логах ответов
+                            else:
+                                # Пытаемся получить username админа для поиска
+                                try:
+                                    admin_chat = bot.get_chat(int(admin_id))
+                                    if admin_chat.username and f"@{admin_chat.username}" in log_data:
+                                        logs.append(line.strip())
+                                except:
+                                    pass
                         else:
                             logs.append(line.strip())
             except Exception as e:
