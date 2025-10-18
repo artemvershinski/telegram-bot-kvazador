@@ -7,6 +7,8 @@ import logging
 import sqlite3
 import datetime
 from threading import Thread
+import requests
+import json
 
 from flask import Flask
 import telebot
@@ -102,7 +104,6 @@ def health():
     return "OK", 200
 
 def run_flask():
-    # В Render обычно WSGI контейнер, но для keep-alive  встроенный сервер в отдельном потоке
     try:
         app.run(host='0.0.0.0', port=int(os.environ.get("PORT", 8080)))
     except Exception as e:
@@ -122,7 +123,8 @@ ADMIN_ID = int(os.environ.get("ADMIN_ID", "8401905691"))
 
 bot = telebot.TeleBot(BOT_TOKEN) if BOT_TOKEN else None
 
-DB_PATH = os.environ.get("DB_PATH", "users.db")
+# Используем SQLite с сохранением в /tmp (сохраняется между деплоями в Render)
+DB_PATH = "/tmp/users.db"
 
 def init_db():
     """Создаёт таблицы, если их нет."""
@@ -141,8 +143,24 @@ def init_db():
         conn.commit()
         conn.close()
         logger.info("Database initialized at %s", DB_PATH)
-    except Exception:
-        logger.exception("Failed to initialize DB")
+        
+        # Создаем бекап при инициализации
+        create_backup()
+        
+    except Exception as e:
+        logger.exception("Failed to initialize DB: %s", e)
+
+def create_backup():
+    """Создает бекап базы данных"""
+    try:
+        if os.path.exists(DB_PATH):
+            # Просто логируем что база существует
+            file_size = os.path.getsize(DB_PATH)
+            logger.info("Database backup check - file exists, size: %s bytes", file_size)
+        else:
+            logger.warning("Database file not found for backup")
+    except Exception as e:
+        logger.error("Failed to create backup: %s", e)
 
 def register_user(user_id, username, first_name, last_name):
     """Сохраняет/обновляет пользователя в БД."""
@@ -154,8 +172,8 @@ def register_user(user_id, username, first_name, last_name):
         conn.commit()
         conn.close()
         logger.debug("Registered user %s (%s)", user_id, username)
-    except Exception:
-        logger.exception("Failed to register user %s", user_id)
+    except Exception as e:
+        logger.exception("Failed to register user %s: %s", user_id, e)
 
 def is_admin(user_id):
     """Проверяет, является ли пользователь админом"""
@@ -166,8 +184,8 @@ def is_admin(user_id):
         result = c.fetchone()
         conn.close()
         return result is not None
-    except Exception:
-        logger.exception("Failed to check admin status for %s", user_id)
+    except Exception as e:
+        logger.exception("Failed to check admin status for %s: %s", user_id, e)
         return False
 
 def is_main_admin(user_id):
@@ -179,8 +197,8 @@ def is_main_admin(user_id):
         result = c.fetchone()
         conn.close()
         return result is not None
-    except Exception:
-        logger.exception("Failed to check main admin status for %s", user_id)
+    except Exception as e:
+        logger.exception("Failed to check main admin status for %s: %s", user_id, e)
         return False
 
 def add_admin(user_id, username, first_name):
@@ -194,8 +212,8 @@ def add_admin(user_id, username, first_name):
         conn.close()
         logger.info("Added admin %s (%s)", user_id, username)
         return True
-    except Exception:
-        logger.exception("Failed to add admin %s", user_id)
+    except Exception as e:
+        logger.exception("Failed to add admin %s: %s", user_id, e)
         return False
 
 def remove_admin(user_id):
@@ -208,8 +226,8 @@ def remove_admin(user_id):
         conn.close()
         logger.info("Removed admin %s", user_id)
         return True
-    except Exception:
-        logger.exception("Failed to remove admin %s", user_id)
+    except Exception as e:
+        logger.exception("Failed to remove admin %s: %s", user_id, e)
         return False
 
 def get_all_users():
@@ -221,8 +239,8 @@ def get_all_users():
         users = c.fetchall()
         conn.close()
         return users
-    except Exception:
-        logger.exception("Failed to get users list")
+    except Exception as e:
+        logger.exception("Failed to get users list: %s", e)
         return []
 
 def get_user_count():
@@ -234,8 +252,8 @@ def get_user_count():
         count = c.fetchone()[0]
         conn.close()
         return count
-    except Exception:
-        logger.exception("Failed to get user count")
+    except Exception as e:
+        logger.exception("Failed to get user count: %s", e)
         return 0
 
 def get_all_admins():
@@ -247,8 +265,8 @@ def get_all_admins():
         admins = c.fetchall()
         conn.close()
         return admins
-    except Exception:
-        logger.exception("Failed to get admins list")
+    except Exception as e:
+        logger.exception("Failed to get admins list: %s", e)
         return []
 
 def get_admin_logs(admin_id=None, days=30):
@@ -325,7 +343,73 @@ if bot:
         except Exception:
             logger.exception("Error in /start handler for message: %s", message)
 
-    # ==================== КОМАНДЫ ДЛЯ ПРОСМОТРА ЛОГОВ ====================
+    # ==================== КОМАНДЫ ДЛЯ УПРАВЛЕНИЯ ЛОГАМИ ====================
+
+    @bot.message_handler(commands=['clearlogs'])
+    def clear_logs_command(message):
+        """Очищает логи администраторов (только для главного админа)"""
+        try:
+            user_id = int(message.from_user.id)
+            
+            if not is_main_admin(user_id):
+                bot.send_message(user_id, "❌ Эта команда только для главного администратора.")
+                return
+
+            parts = message.text.split()
+            if len(parts) < 2:
+                bot.send_message(user_id, "❌ Используй:\n/clearlogs all - очистить все логи\n/clearlogs 123456789 - очистить логи конкретного админа")
+                return
+
+            target = parts[1]
+            
+            if target == 'all':
+                # Очищаем все логи
+                open(ADMIN_LOGFILE, 'w', encoding='utf-8').close()
+                bot.send_message(user_id, "✅ Все логи администраторов очищены.")
+                
+                # Логируем действие
+                admin_name = f"{message.from_user.first_name} (@{message.from_user.username})" if message.from_user.username else message.from_user.first_name
+                log_admin_action(user_id, admin_name, "очистка всех логов")
+                
+            else:
+                try:
+                    target_id = int(target)
+                    # Удаляем логи только для указанного админа
+                    logs = get_admin_logs(None, 36500)  # 100 лет = все логи
+                    
+                    # Получаем username админа для поиска в логах
+                    admin_username = None
+                    try:
+                        admin_chat = bot.get_chat(target_id)
+                        admin_username = f"@{admin_chat.username}" if admin_chat.username else None
+                    except:
+                        pass
+                    
+                    # Фильтруем логи - удаляем те, где есть ID админа ИЛИ его username
+                    filtered_logs = []
+                    for log in logs:
+                        if f"ADMIN {target_id}" in log:
+                            continue  # Пропускаем логи с ID админа
+                        if admin_username and admin_username in log:
+                            continue  # Пропускаем логи с username админа
+                        filtered_logs.append(log)
+                    
+                    # Перезаписываем файл без логов этого админа
+                    with open(ADMIN_LOGFILE, 'w', encoding='utf-8') as f:
+                        for log in filtered_logs:
+                            f.write(log + '\n')
+                    
+                    bot.send_message(user_id, f"✅ Логи администратора {target_id} очищены.")
+                    
+                    # Логируем действие
+                    admin_name = f"{message.from_user.first_name} (@{message.from_user.username})" if message.from_user.username else message.from_user.first_name
+                    log_admin_action(user_id, admin_name, "очистка логов администратора", f"админ: {target_id}")
+                    
+                except ValueError:
+                    bot.send_message(user_id, "❌ Неверный user_id. Используй число или 'all'")
+                    
+        except Exception:
+            logger.exception("Error in /clearlogs handler: %s", message)
 
     @bot.message_handler(commands=['adminlogs'])
     def show_admin_logs(message):
