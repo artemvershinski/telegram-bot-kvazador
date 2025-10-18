@@ -15,23 +15,8 @@ import telebot
 from telebot.types import ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove
 
 # ----------------------------
-# Настройка логирования с часовым поясом UTC+3
+# Настройка логирования
 # ----------------------------
-import logging
-class MoscowTimeFormatter(logging.Formatter):
-    def converter(self, timestamp):
-        # Создаем время в UTC+3
-        dt = datetime.datetime.fromtimestamp(timestamp, tz=datetime.timezone(datetime.timedelta(hours=3)))
-        return dt.timetuple()
-    
-    def formatTime(self, record, datefmt=None):
-        dt = self.converter(record.created)
-        if datefmt:
-            return datetime.datetime.fromtimestamp(record.created).astimezone(
-                datetime.timezone(datetime.timedelta(hours=3))).strftime(datefmt)
-        else:
-            return super().formatTime(record, datefmt)
-
 LOGFILE = os.environ.get("BOT_LOGFILE", "bot.log")
 ADMIN_LOGFILE = os.environ.get("ADMIN_LOGFILE", "admin_actions.log")
 
@@ -46,28 +31,41 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Применяем московское время к основному логгеру
-for handler in logger.handlers:
-    handler.setFormatter(MoscowTimeFormatter("%Y-%m-%d %H:%M:%S"))
-
 # Настройка логгера для действий администраторов
 admin_logger = logging.getLogger('admin_actions')
 admin_logger.setLevel(logging.INFO)
 admin_handler = logging.FileHandler(ADMIN_LOGFILE, encoding='utf-8')
-admin_handler.setFormatter(MoscowTimeFormatter('%Y-%m-%d %H:%M:%S - %(message)s'))
+admin_handler.setFormatter(logging.Formatter('%(asctime)s - %(message)s'))
 admin_logger.addHandler(admin_handler)
 admin_logger.propagate = False
 
-def get_moscow_time():
-    """Возвращает текущее время в формате UTC+3"""
-    return datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=3))).strftime('%Y-%m-%d %H:%M:%S')
+def get_current_time():
+    """Возвращает текущее время в формате UTC"""
+    return datetime.datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')
+
+def ensure_log_files():
+    """Создает файлы логов если они не существуют"""
+    try:
+        for log_file in [LOGFILE, ADMIN_LOGFILE]:
+            if not os.path.exists(log_file):
+                open(log_file, 'w', encoding='utf-8').close()
+                logger.info(f"Created log file: {log_file}")
+    except Exception as e:
+        logger.error(f"Failed to create log files: {e}")
 
 def log_admin_action(admin_id, admin_name, action, target_info=""):
-    """Логирует действия администраторов с московским временем"""
-    log_message = f"ADMIN {admin_id} ({admin_name}) - {action}"
-    if target_info:
-        log_message += f" - {target_info}"
-    admin_logger.info(log_message)
+    """Логирует действия администраторов"""
+    try:
+        log_message = f"ADMIN {admin_id} ({admin_name}) - {action}"
+        if target_info:
+            log_message += f" - {target_info}"
+        
+        # Записываем в оба места для надежности
+        logger.info(f"ADMIN_ACTION: {log_message}")
+        admin_logger.info(log_message)
+        
+    except Exception as e:
+        logger.error(f"Failed to log admin action: {e}")
 
 # ----------------------------
 # Ограничение времени между сообщениями (5 секунд)
@@ -159,6 +157,8 @@ def init_db():
         
         conn = sqlite3.connect(DB_PATH, check_same_thread=False)
         c = conn.cursor()
+        
+        # Создаем таблицы
         c.execute('''CREATE TABLE IF NOT EXISTS users
                      (user_id INTEGER PRIMARY KEY, username TEXT, first_name TEXT, last_name TEXT, date_added TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
         c.execute('''CREATE TABLE IF NOT EXISTS admins
@@ -179,25 +179,22 @@ def init_db():
         # Проверяем что админ добавлен
         c.execute("SELECT * FROM admins WHERE user_id = ?", (ADMIN_ID,))
         admin_check = c.fetchone()
-        logger.info(f"Admin check result: {admin_check}")
+        if admin_check:
+            logger.info(f"✅ Main admin successfully added: {admin_check}")
+        else:
+            logger.error(f"❌ Failed to add main admin: {ADMIN_ID}")
+        
+        # Показываем всех админов в логах
+        c.execute("SELECT * FROM admins")
+        all_admins = c.fetchall()
+        logger.info(f"All admins in DB: {all_admins}")
         
         conn.commit()
         conn.close()
-        logger.info("Database initialized at %s", DB_PATH)
+        logger.info(f"Database initialized at {DB_PATH}")
         
     except Exception as e:
-        logger.exception("Failed to initialize DB: %s", e)
-
-def create_backup():
-    """Создает бекап базы данных"""
-    try:
-        if os.path.exists(DB_PATH):
-            file_size = os.path.getsize(DB_PATH)
-            logger.info("Database backup check - file exists, size: %s bytes", file_size)
-        else:
-            logger.warning("Database file not found for backup")
-    except Exception as e:
-        logger.error("Failed to create backup: %s", e)
+        logger.exception(f"Failed to initialize DB: {e}")
 
 def register_user(user_id, username, first_name, last_name):
     """Сохраняет/обновляет пользователя в БД."""
@@ -309,7 +306,12 @@ def get_all_admins():
 def get_admin_logs(admin_id=None, days=30):
     """Возвращает логи администраторов за указанный период"""
     try:
-        cutoff_date = (datetime.datetime.now() - datetime.timedelta(days=days)).strftime('%Y-%m-%d %H:%M:%S')
+        if not os.path.exists(ADMIN_LOGFILE):
+            logger.warning(f"Admin log file not found: {ADMIN_LOGFILE}")
+            return []
+        
+        # Используем UTC время для сравнения
+        cutoff_date = (datetime.datetime.utcnow() - datetime.timedelta(days=days))
         
         with open(ADMIN_LOGFILE, 'r', encoding='utf-8') as f:
             lines = f.readlines()
@@ -317,30 +319,31 @@ def get_admin_logs(admin_id=None, days=30):
         logs = []
         for line in lines:
             try:
-                parts = line.strip().split(' - ', 2)
-                if len(parts) >= 3:
-                    timestamp = parts[0]
-                    log_data = parts[2]
+                if not line.strip():
+                    continue
                     
-                    log_datetime = datetime.datetime.strptime(timestamp, '%Y-%m-%d %H:%M:%S')
-                    if log_datetime >= datetime.datetime.now() - datetime.timedelta(days=days):
-                        
+                parts = line.strip().split(' - ', 2)
+                if len(parts) >= 2:
+                    timestamp_str = parts[0]
+                    log_content = parts[1] if len(parts) == 2 else parts[2]
+                    
+                    # Парсим время из лога
+                    log_time = datetime.datetime.strptime(timestamp_str, '%Y-%m-%d %H:%M:%S')
+                    
+                    # Сравниваем время
+                    if log_time >= cutoff_date:
                         if admin_id:
-                            if f"ADMIN {admin_id}" in log_data:
+                            if f"ADMIN {admin_id}" in log_content:
                                 logs.append(line.strip())
-                            else:
-                                try:
-                                    admin_chat = bot.get_chat(int(admin_id))
-                                    if admin_chat.username and f"@{admin_chat.username}" in log_data:
-                                        logs.append(line.strip())
-                                except:
-                                    pass
                         else:
                             logs.append(line.strip())
             except Exception as e:
+                logger.error(f"Error parsing log line: {line} - {e}")
                 continue
         
+        logger.info(f"Found {len(logs)} admin logs for period {days} days")
         return logs
+        
     except Exception as e:
         logger.exception("Failed to read admin logs: %s", e)
         return []
@@ -402,7 +405,7 @@ def is_banned(user_id):
         
         if ban_type == "temporary" and duration_seconds:
             banned_time = datetime.datetime.strptime(banned_at, '%Y-%m-%d %H:%M:%S')
-            current_time = datetime.datetime.now()
+            current_time = datetime.datetime.utcnow()
             time_passed = (current_time - banned_time).total_seconds()
             
             if time_passed >= duration_seconds:
@@ -450,7 +453,7 @@ def can_request_unban(user_id):
             return True
         
         last_request = datetime.datetime.strptime(result[0], '%Y-%m-%d %H:%M:%S')
-        current_time = datetime.datetime.now()
+        current_time = datetime.datetime.utcnow()
         time_passed = (current_time - last_request).total_seconds()
         
         return time_passed >= 7 * 24 * 3600
@@ -475,7 +478,7 @@ user_reply_mode = {}
 user_unban_mode = {}
 
 # ----------------------------
-# Хэндлеры бота - ИСПРАВЛЕННЫЕ
+# Хэндлеры бота
 # ----------------------------
 if bot:
     @bot.message_handler(commands=['start'])
@@ -795,11 +798,17 @@ if bot:
             target = parts[1]
             
             if target == 'all':
-                open(ADMIN_LOGFILE, 'w', encoding='utf-8').close()
-                bot.send_message(user_id, "✅ Все логи администраторов очищены.")
-                
-                admin_name = f"{message.from_user.first_name} (@{message.from_user.username})" if message.from_user.username else message.from_user.first_name
-                log_admin_action(user_id, admin_name, "очистка всех логов")
+                try:
+                    with open(ADMIN_LOGFILE, 'w', encoding='utf-8') as f:
+                        f.write("")
+                    bot.send_message(user_id, "✅ Все логи администраторов очищены.")
+                    
+                    admin_name = f"{message.from_user.first_name} (@{message.from_user.username})" if message.from_user.username else message.from_user.first_name
+                    log_admin_action(user_id, admin_name, "очистка всех логов")
+                    
+                except Exception as e:
+                    bot.send_message(user_id, f"❌ Ошибка при очистке логов: {e}")
+                    logger.error(f"Failed to clear admin logs: {e}")
                 
             else:
                 try:
@@ -898,71 +907,15 @@ if bot:
                     continue
 
             for date, date_logs in sorted(date_groups.items(), reverse=True):
-                log_text += f"{date}:\n"
+                log_text += f"📅 {date}:\n"
                 
                 for log in date_logs:
-                    log_parts = log.split(' - ', 2)
-                    if len(log_parts) >= 3:
-                        time_part = log_parts[0].split(' ')[1][:8]
-                        admin_part = log_parts[1]
-                        action_part = log_parts[2]
-                        
-                        admin_info = admin_part.replace('ADMIN ', '')
-                        formatted_action = action_part
-                        
-                        if "включение режима ответа" in action_part or "выключение режима ответа" in action_part:
-                            continue
-                        
-                        if "отправка ответа пользователю" in action_part:
-                            if "пользователь:" in action_part and "ответ:" in action_part:
-                                user_part = action_part.split("пользователь: ")[1].split(" | ")[0]
-                                response_text = action_part.split("ответ: ")[1]
-                                
-                                admin_id = admin_info.split(' ')[0]
-                                admin_username = "Неизвестно"
-                                try:
-                                    admin_chat = bot.get_chat(int(admin_id))
-                                    admin_username = f"@{admin_chat.username}" if admin_chat.username else admin_chat.first_name
-                                except:
-                                    admin_username = f"ID: {admin_id}"
-                                
-                                target_username = "Неизвестно"
-                                try:
-                                    target_chat = bot.get_chat(int(user_part))
-                                    target_username = f"@{target_chat.username}" if target_chat.username else target_chat.first_name
-                                except:
-                                    target_username = f"ID: {user_part}"
-                                
-                                formatted_action = f"Администратор {admin_username} ответил пользователю {target_username}\nОтвет: {response_text}"
-                        
-                        elif "добавление администратора" in action_part:
-                            if "новый админ:" in action_part:
-                                new_admin_info = action_part.split("новый админ: ")[1]
-                                formatted_action = f"добавление администратора - новый админ: {new_admin_info}"
-                        
-                        elif "удаление администратора" in action_part:
-                            if "удален админ:" in action_part:
-                                removed_admin_id = action_part.split("удален админ: ")[1]
-                                formatted_action = f"удаление администратора - удален админ: {removed_admin_id}"
-                        
-                        elif "рассылка сообщений" in action_part:
-                            if "получателей:" in action_part:
-                                stats = action_part.split("рассылка сообщений - ")[1]
-                                formatted_action = f"рассылка сообщений - {stats}"
-                        
-                        elif "просмотр статистики" in action_part:
-                            formatted_action = "просмотр статистики"
-                        
-                        elif "просмотр списка пользователей" in action_part:
-                            formatted_action = "просмотр списка пользователей"
-                        
-                        elif "просмотр списка администраторов" in action_part:
-                            formatted_action = "просмотр списка администраторов"
-                        
-                        elif "временный бан" in action_part or "перманентный бан" in action_part or "разбан пользователя" in action_part:
-                            formatted_action = action_part
-                        
-                        log_text += f"{time_part} - {formatted_action}\n"
+                    try:
+                        # Берем все после временной метки
+                        log_content = log.split(' - ', 1)[1]
+                        log_text += f"   {log_content}\n"
+                    except:
+                        log_text += f"   {log}\n"
                 
                 log_text += "\n"
 
@@ -1021,41 +974,62 @@ if bot:
             
             for log in logs:
                 try:
-                    parts = log.split(' - ')
-                    if len(parts) >= 3:
-                        admin_part = parts[1]
-                        action_part = parts[2]
-                        
-                        admin_id = admin_part.split(' ')[1]
-                        
-                        if admin_id not in admin_actions:
-                            admin_actions[admin_id] = 0
-                        admin_actions[admin_id] += 1
-                        
-                        action_type = action_part.split(' - ')[0] if ' - ' in action_part else action_part
-                        if action_type not in action_types:
-                            action_types[action_type] = 0
-                        action_types[action_type] += 1
-                except:
+                    # Извлекаем ID админа и действие из лога
+                    if 'ADMIN' in log:
+                        parts = log.split('ADMIN ', 1)
+                        if len(parts) > 1:
+                            admin_part = parts[1].split(')', 1)[0]
+                            admin_id = admin_part.split(' (')[0]
+                            
+                            action_part = log.split(' - ', 1)[1] if ' - ' in log else log
+                            
+                            if admin_id not in admin_actions:
+                                admin_actions[admin_id] = 0
+                            admin_actions[admin_id] += 1
+                            
+                            # Определяем тип действия
+                            action_type = "другое"
+                            if 'бан' in action_part.lower():
+                                action_type = "бан"
+                            elif 'разбан' in action_part.lower():
+                                action_type = "разбан"
+                            elif 'рассылка' in action_part.lower():
+                                action_type = "рассылка"
+                            elif 'добавление администратора' in action_part.lower():
+                                action_type = "добавление админа"
+                            elif 'удаление администратора' in action_part.lower():
+                                action_type = "удаление админа"
+                            elif 'просмотр' in action_part.lower():
+                                action_type = "просмотр"
+                            elif 'очистка' in action_part.lower():
+                                action_type = "очистка логов"
+                                
+                            if action_type not in action_types:
+                                action_types[action_type] = 0
+                            action_types[action_type] += 1
+                except Exception as e:
+                    logger.error(f"Error parsing log for stats: {log} - {e}")
                     continue
 
             stats_text = f"Статистика логов администраторов за {days} дней:\n\n"
             stats_text += f"Всего записей: {len(logs)}\n\n"
             
-            stats_text += "Активность по администраторам:\n"
-            for admin_id, count in sorted(admin_actions.items(), key=lambda x: x[1], reverse=True):
-                admin_name = "Неизвестно"
-                try:
-                    admin_chat = bot.get_chat(int(admin_id))
-                    admin_name = f"@{admin_chat.username}" if admin_chat.username else admin_chat.first_name
-                except:
-                    admin_name = f"ID: {admin_id}"
-                
-                stats_text += f"• {admin_name}: {count} действий\n"
+            if admin_actions:
+                stats_text += "Активность по администраторам:\n"
+                for admin_id, count in sorted(admin_actions.items(), key=lambda x: x[1], reverse=True):
+                    admin_name = "Неизвестно"
+                    try:
+                        admin_chat = bot.get_chat(int(admin_id))
+                        admin_name = f"@{admin_chat.username}" if admin_chat.username else admin_chat.first_name
+                    except:
+                        admin_name = f"ID: {admin_id}"
+                    
+                    stats_text += f"• {admin_name}: {count} действий\n"
             
-            stats_text += "\nТипы действий:\n"
-            for action_type, count in sorted(action_types.items(), key=lambda x: x[1], reverse=True):
-                stats_text += f"• {action_type}: {count} раз\n"
+            if action_types:
+                stats_text += "\nТипы действий:\n"
+                for action_type, count in sorted(action_types.items(), key=lambda x: x[1], reverse=True):
+                    stats_text += f"• {action_type}: {count} раз\n"
 
             bot.send_message(user_id, stats_text)
 
@@ -1143,7 +1117,7 @@ if bot:
                 return
 
             if remove_admin(target_id):
-                bot.send_message(ADMIN_ID, f"✅ Администратор (ID: {target_id}) удален.")
+                bot.send_message(user_id, f"✅ Администратор (ID: {target_id}) удален.")
                 
                 admin_name = f"{message.from_user.first_name} (@{message.from_user.username})" if message.from_user.username else message.from_user.first_name
                 log_admin_action(user_id, admin_name, "удаление администратора", f"удален админ: {target_id}")
@@ -1331,7 +1305,7 @@ if bot:
             debug_text = f"Диагностика:\n\n"
             debug_text += f"User ID: {user_id}\n"
             debug_text += f"Текст: {message.text}\n"
-            debug_text += f"Время: {get_moscow_time()}\n\n"
+            debug_text += f"Время: {get_current_time()}\n\n"
             
             debug_text += f"Статистика обработчиков:\n"
             debug_text += f"• user_reply_mode: {user_id in user_reply_mode}\n"
@@ -1343,6 +1317,12 @@ if bot:
             
             ban_info = is_banned(user_id)
             debug_text += f"Бан: {ban_info if ban_info else 'Нет'}\n"
+            
+            # Проверка файлов логов
+            debug_text += f"\nФайлы логов:\n"
+            debug_text += f"• Основной лог: {os.path.exists(LOGFILE)}\n"
+            debug_text += f"• Логи админов: {os.path.exists(ADMIN_LOGFILE)}\n"
+            debug_text += f"• База данных: {os.path.exists(DB_PATH)}\n"
             
             bot.send_message(user_id, debug_text)
             
@@ -1563,7 +1543,7 @@ if bot:
             if message.from_user.username:
                 user_info += f" (@{message.from_user.username})"
             user_info += f"\n🆔 ID: {user_id}"
-            user_info += f"\n⏰ {get_moscow_time()}"
+            user_info += f"\n⏰ {get_current_time()}"
 
             admins = get_all_admins()
             for admin in admins:
@@ -1609,7 +1589,7 @@ if bot:
             if message.from_user.username:
                 user_info += f" (@{message.from_user.username})"
             user_info += f"\n🆔 ID: {user_id}"
-            user_info += f"\n⏰ {get_moscow_time()}"
+            user_info += f"\n⏰ {get_current_time()}"
 
             caption = f"{user_info}\n\n"
             if message.caption:
@@ -1668,7 +1648,7 @@ if bot:
             if message.from_user.username:
                 user_info += f" (@{message.from_user.username})"
             user_info += f"\n🆔 ID: {user_id}"
-            user_info += f"\n⏰ {get_moscow_time()}"
+            user_info += f"\n⏰ {get_current_time()}"
 
             admins = get_all_admins()
             for admin in admins:
@@ -1711,6 +1691,8 @@ def start_bot_loop():
         logger.error("Bot object is not created because BOT_TOKEN is missing.")
         return
 
+    # Создаем файлы логов при запуске
+    ensure_log_files()
     init_db()
 
     try:
@@ -1743,3 +1725,6 @@ if __name__ == "__main__":
         logger.info("Bot stopped by KeyboardInterrupt")
     except Exception:
         logger.exception("Fatal error in main")
+
+
+#                                                                     ‭✝
