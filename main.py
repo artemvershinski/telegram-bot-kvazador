@@ -15,8 +15,23 @@ import telebot
 from telebot.types import ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove
 
 # ----------------------------
-# Настройка логирования
+# Настройка логирования с часовым поясом UTC+3
 # ----------------------------
+import logging
+class MoscowTimeFormatter(logging.Formatter):
+    def converter(self, timestamp):
+        # Создаем время в UTC+3
+        dt = datetime.datetime.fromtimestamp(timestamp, tz=datetime.timezone(datetime.timedelta(hours=3)))
+        return dt.timetuple()
+    
+    def formatTime(self, record, datefmt=None):
+        dt = self.converter(record.created)
+        if datefmt:
+            return datetime.datetime.fromtimestamp(record.created).astimezone(
+                datetime.timezone(datetime.timedelta(hours=3))).strftime(datefmt)
+        else:
+            return super().formatTime(record, datefmt)
+
 LOGFILE = os.environ.get("BOT_LOGFILE", "bot.log")
 ADMIN_LOGFILE = os.environ.get("ADMIN_LOGFILE", "admin_actions.log")
 
@@ -31,16 +46,24 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# Применяем московское время к основному логгеру
+for handler in logger.handlers:
+    handler.setFormatter(MoscowTimeFormatter("%Y-%m-%d %H:%M:%S"))
+
 # Настройка логгера для действий администраторов
 admin_logger = logging.getLogger('admin_actions')
 admin_logger.setLevel(logging.INFO)
 admin_handler = logging.FileHandler(ADMIN_LOGFILE, encoding='utf-8')
-admin_handler.setFormatter(logging.Formatter('%(asctime)s - %(message)s'))
+admin_handler.setFormatter(MoscowTimeFormatter('%Y-%m-%d %H:%M:%S - %(message)s'))
 admin_logger.addHandler(admin_handler)
 admin_logger.propagate = False
 
+def get_moscow_time():
+    """Возвращает текущее время в формате UTC+3"""
+    return datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=3))).strftime('%Y-%m-%d %H:%M:%S')
+
 def log_admin_action(admin_id, admin_name, action, target_info=""):
-    """Логирует действия администраторов"""
+    """Логирует действия администраторов с московским временем"""
     log_message = f"ADMIN {admin_id} ({admin_name}) - {action}"
     if target_info:
         log_message += f" - {target_info}"
@@ -295,7 +318,7 @@ def get_admin_logs(admin_id=None, days=30):
                     log_data = parts[2]
                     
                     # Проверяем дату
-                    log_datetime = datetime.datetime.strptime(timestamp, '%Y-%m-%d %H:%M:%S,%f')
+                    log_datetime = datetime.datetime.strptime(timestamp, '%Y-%m-%d %H:%M:%S')
                     if log_datetime >= datetime.datetime.now() - datetime.timedelta(days=days):
                         
                         # Если указан конкретный админ, фильтруем по нему
@@ -535,11 +558,19 @@ if bot:
                 except Exception as e:
                     logger.warning("Could not notify banned user %s: %s", target_id, e)
 
-                bot.send_message(user_id, f"✅ Пользователь {target_id} забанен на {format_time_left(duration)}.\nПричина: {reason}")
+                # Получаем username для логирования
+                target_username = "Неизвестно"
+                try:
+                    target_chat = bot.get_chat(target_id)
+                    target_username = f"@{target_chat.username}" if target_chat.username else target_chat.first_name
+                except:
+                    target_username = f"ID: {target_id}"
+
+                bot.send_message(user_id, f"✅ Пользователь {target_username} забанен на {format_time_left(duration)}.\nПричина: {reason}")
                 
-                # Логируем действие
+                # Логируем действие с username
                 admin_name = f"{message.from_user.first_name} (@{message.from_user.username})" if message.from_user.username else message.from_user.first_name
-                log_admin_action(user_id, admin_name, "временный бан", f"пользователь: {target_id}, время: {duration}сек, причина: {reason}")
+                log_admin_action(user_id, admin_name, "временный бан", f"пользователь: {target_username} (ID: {target_id}), время: {duration}сек, причина: {reason}")
             else:
                 bot.send_message(user_id, "❌ Ошибка при бане пользователя.")
                 
@@ -580,11 +611,19 @@ if bot:
                 except Exception as e:
                     logger.warning("Could not notify banned user %s: %s", target_id, e)
 
-                bot.send_message(user_id, f"✅ Пользователь {target_id} забанен навсегда.\nПричина: {reason}")
+                # Получаем username для логирования
+                target_username = "Неизвестно"
+                try:
+                    target_chat = bot.get_chat(target_id)
+                    target_username = f"@{target_chat.username}" if target_chat.username else target_chat.first_name
+                except:
+                    target_username = f"ID: {target_id}"
+
+                bot.send_message(user_id, f"✅ Пользователь {target_username} забанен навсегда.\nПричина: {reason}")
                 
-                # Логируем действие
+                # Логируем действие с username
                 admin_name = f"{message.from_user.first_name} (@{message.from_user.username})" if message.from_user.username else message.from_user.first_name
-                log_admin_action(user_id, admin_name, "перманентный бан", f"пользователь: {target_id}, причина: {reason}")
+                log_admin_action(user_id, admin_name, "перманентный бан", f"пользователь: {target_username} (ID: {target_id}), причина: {reason}")
             else:
                 bot.send_message(user_id, "❌ Ошибка при бане пользователя.")
                 
@@ -653,11 +692,19 @@ if bot:
                 except Exception as e:
                     logger.warning("Could not notify unbanned user %s: %s", target_id, e)
 
-                bot.send_message(user_id, f"✅ Пользователь {target_id} разбанен.")
+                # Получаем username для логирования
+                target_username = "Неизвестно"
+                try:
+                    target_chat = bot.get_chat(target_id)
+                    target_username = f"@{target_chat.username}" if target_chat.username else target_chat.first_name
+                except:
+                    target_username = f"ID: {target_id}"
+
+                bot.send_message(user_id, f"✅ Пользователь {target_username} разбанен.")
                 
-                # Логируем действие
+                # Логируем действие с username
                 admin_name = f"{message.from_user.first_name} (@{message.from_user.username})" if message.from_user.username else message.from_user.first_name
-                log_admin_action(user_id, admin_name, "разбан пользователя", f"пользователь: {target_id}")
+                log_admin_action(user_id, admin_name, "разбан пользователя", f"пользователь: {target_username} (ID: {target_id})")
             else:
                 bot.send_message(user_id, "❌ Ошибка при разбане пользователя.")
                 
@@ -736,7 +783,7 @@ if bot:
                     admin_username = None
                     try:
                         admin_chat = bot.get_chat(target_id)
-                        admin_username = f"@{admin_chat.username}" if admin_chat.username else None
+                        admin_username = f"@{admin_chat.username}" if admin_chat.username else admin_chat.first_name
                     except:
                         pass
                     
@@ -1477,7 +1524,7 @@ if bot:
             if message.from_user.username:
                 user_info += f" (@{message.from_user.username})"
             user_info += f"\n🆔 ID: {user_id}"
-            user_info += f"\n⏰ {datetime.datetime.now().strftime('%d.%m.%Y %H:%M')}"
+            user_info += f"\n⏰ {get_moscow_time()}"
 
             # Отправляем сообщение всем админам
             admins = get_all_admins()
@@ -1526,7 +1573,7 @@ if bot:
             if message.from_user.username:
                 user_info += f" (@{message.from_user.username})"
             user_info += f"\n🆔 ID: {user_id}"
-            user_info += f"\n⏰ {datetime.datetime.now().strftime('%d.%m.%Y %H:%M')}"
+            user_info += f"\n⏰ {get_moscow_time()}"
 
             caption = f"{user_info}\n\n"
             if message.caption:
@@ -1588,7 +1635,7 @@ if bot:
             if message.from_user.username:
                 user_info += f" (@{message.from_user.username})"
             user_info += f"\n🆔 ID: {user_id}"
-            user_info += f"\n⏰ {datetime.datetime.now().strftime('%d.%m.%Y %H:%M')}"
+            user_info += f"\n⏰ {get_moscow_time()}"
 
             # Отправляем всем админам
             admins = get_all_admins()
@@ -1634,7 +1681,7 @@ def start_bot_loop():
 
     init_db()
 
-    # Проверка токена и получение информации о боте
+    # Проверка токена и получение информации о бота
     try:
         logger.info("Attempting bot.get_me() to verify token...")
         me = bot.get_me()
