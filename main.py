@@ -121,7 +121,7 @@ app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "🤖 Bot is alive and running!"
+    return "🤖 Bot is alive and running! TG SEARCH: @KVZDR_BOT"
 
 @app.route('/health')
 def health():
@@ -322,23 +322,39 @@ def get_admin_logs(admin_id=None, days=30):
                 if not line.strip():
                     continue
                     
-                parts = line.strip().split(' - ', 2)
-                if len(parts) >= 2:
-                    timestamp_str = parts[0]
-                    log_content = parts[1] if len(parts) == 2 else parts[2]
-                    
-                    # Парсим время из лога
-                    log_time = datetime.datetime.strptime(timestamp_str, '%Y-%m-%d %H:%M:%S')
-                    
-                    # Сравниваем время
-                    if log_time >= cutoff_date:
-                        if admin_id:
-                            if f"ADMIN {admin_id}" in log_content:
+                # ИСПРАВЛЕНИЕ: обрабатываем оба формата времени
+                if ' - ' in line:
+                    parts = line.strip().split(' - ', 1)  # Делим только на 2 части
+                    if len(parts) >= 2:
+                        timestamp_str = parts[0].strip()
+                        log_content = parts[1].strip()
+                        
+                        # Убираем миллисекунды если есть
+                        if ',' in timestamp_str:
+                            timestamp_str = timestamp_str.split(',')[0]
+                        
+                        # Парсим время из лога
+                        try:
+                            log_time = datetime.datetime.strptime(timestamp_str, '%Y-%m-%d %H:%M:%S')
+                            
+                            # Сравниваем время
+                            if log_time >= cutoff_date:
+                                if admin_id:
+                                    if f"ADMIN {admin_id}" in log_content:
+                                        logs.append(line.strip())
+                                else:
+                                    logs.append(line.strip())
+                        except ValueError as e:
+                            logger.warning(f"Failed to parse timestamp '{timestamp_str}': {e}")
+                            # Все равно добавляем лог если не можем распарсить время
+                            if not admin_id or f"ADMIN {admin_id}" in line:
                                 logs.append(line.strip())
-                        else:
-                            logs.append(line.strip())
+                
             except Exception as e:
                 logger.error(f"Error parsing log line: {line} - {e}")
+                # Все равно добавляем лог при ошибке парсинга
+                if not admin_id or f"ADMIN {admin_id}" in line:
+                    logs.append(line.strip())
                 continue
         
         logger.info(f"Found {len(logs)} admin logs for period {days} days")
@@ -844,98 +860,79 @@ if bot:
                     
         except Exception:
             logger.exception("Error in /clearlogs handler: %s", message)
-
-    @bot.message_handler(commands=['adminlogs'])
-    def show_admin_logs(message):
-        """Показывает логи администраторов (только для главного админа)"""
-        logger.info(f"🎯 /adminlogs handler triggered by {message.from_user.id}")
-        try:
-            user_id = int(message.from_user.id)
             
-            if not is_main_admin(user_id):
-                bot.send_message(user_id, "❌ Эта команда только для главного администратора.")
-                return
+@bot.message_handler(commands=['adminlogs'])
+def show_admin_logs(message):
+    """Показывает логи администраторов (только для главного админа)"""
+    logger.info(f"🎯 /adminlogs handler triggered by {message.from_user.id}")
+    try:
+        user_id = int(message.from_user.id)
+        
+        if not is_main_admin(user_id):
+            bot.send_message(user_id, "❌ Эта команда только для главного администратора.")
+            return
 
-            parts = message.text.split()
-            days = 30
-            
-            target_admin_id = None
-            if len(parts) >= 2:
-                try:
-                    target_admin_id = int(parts[1])
-                except ValueError:
-                    if parts[1].lower() == 'all':
-                        target_admin_id = None
-                    else:
-                        bot.send_message(user_id, "❌ Используй:\n/adminlogs - логи всех админов за месяц\n/adminlogs all - то же самое\n/adminlogs 123456789 - логи конкретного админа\n/adminlogs 123456789 7 - логи админа за 7 дней")
-                        return
-            
-            if len(parts) >= 3:
-                try:
-                    days = int(parts[2])
-                    if days <= 0 or days > 365:
-                        bot.send_message(user_id, "❌ Количество дней должно быть от 1 до 365")
-                        return
-                except ValueError:
-                    bot.send_message(user_id, "❌ Количество дней должно быть числом")
-                    return
-
-            bot.send_message(user_id, f"🔄 Получаю логи за последние {days} дней...")
-
-            logs = get_admin_logs(target_admin_id, days)
-            
-            if not logs:
-                if target_admin_id:
-                    bot.send_message(user_id, f"📭 Логов для администратора {target_admin_id} за последние {days} дней не найдено.")
+        parts = message.text.split()
+        days = 30
+        
+        target_admin_id = None
+        if len(parts) >= 2:
+            try:
+                target_admin_id = int(parts[1])
+            except ValueError:
+                if parts[1].lower() == 'all':
+                    target_admin_id = None
                 else:
-                    bot.send_message(user_id, f"📭 Логов администраторов за последние {days} дней не найдено.")
+                    bot.send_message(user_id, "❌ Используй:\n/adminlogs - логи всех админов за месяц\n/adminlogs all - то же самое\n/adminlogs 123456789 - логи конкретного админа\n/adminlogs 123456789 7 - логи админа за 7 дней")
+                    return
+        
+        if len(parts) >= 3:
+            try:
+                days = int(parts[2])
+                if days <= 0 or days > 365:
+                    bot.send_message(user_id, "❌ Количество дней должно быть от 1 до 365")
+                    return
+            except ValueError:
+                bot.send_message(user_id, "❌ Количество дней должно быть числом")
                 return
 
+        bot.send_message(user_id, f"🔄 Получаю логи за последние {days} дней...")
+
+        logs = get_admin_logs(target_admin_id, days)
+        
+        if not logs:
             if target_admin_id:
-                log_text = f"Логи администратора {target_admin_id} за последние {days} дней:\n\n"
+                bot.send_message(user_id, f"📭 Логов для администратора {target_admin_id} за последние {days} дней не найдено.")
             else:
-                log_text = f"Логи всех администраторов за последние {days} дней:\n\n"
+                bot.send_message(user_id, f"📭 Логов администраторов за последние {days} дней не найдено.")
+            return
 
-            date_groups = {}
-            for log in logs:
-                try:
-                    date_part = log.split(' ')[0]
-                    if date_part not in date_groups:
-                        date_groups[date_part] = []
-                    date_groups[date_part].append(log)
-                except:
-                    continue
+        if target_admin_id:
+            log_text = f"Логи администратора {target_admin_id} за последние {days} дней:\n\n"
+        else:
+            log_text = f"Логи всех администраторов за последние {days} дней:\n\n"
 
-            for date, date_logs in sorted(date_groups.items(), reverse=True):
-                log_text += f"📅 {date}:\n"
-                
-                for log in date_logs:
-                    try:
-                        # Берем все после временной метки
-                        log_content = log.split(' - ', 1)[1]
-                        log_text += f"   {log_content}\n"
-                    except:
-                        log_text += f"   {log}\n"
-                
-                log_text += "\n"
-
-                if len(log_text) > 3500:
-                    bot.send_message(user_id, log_text)
-                    log_text = ""
-
-            if log_text:
-                bot.send_message(user_id, log_text)
-
-            bot.send_message(user_id, f"📈 Всего записей: {len(logs)}")
-
-            if is_main_admin(user_id):
-                admin_name = f"{message.from_user.first_name} (@{message.from_user.username})" if message.from_user.username else message.from_user.first_name
-                action = f"просмотр логов за {days} дней"
-                target_info = f"админ {target_admin_id}" if target_admin_id else "все админы"
-                log_admin_action(user_id, admin_name, action, target_info)
+        # Просто выводим все логи без сложной обработки
+        for i, log in enumerate(logs[-50:], 1):  # Последние 50 записей
+            log_text += f"{i}. {log}\n\n"
             
-        except Exception:
-            logger.exception("Error in /adminlogs handler: %s", message)
+            if len(log_text) > 3500:
+                bot.send_message(user_id, log_text)
+                log_text = ""
+
+        if log_text:
+            bot.send_message(user_id, log_text)
+
+        bot.send_message(user_id, f"📈 Всего записей: {len(logs)}")
+
+        if is_main_admin(user_id):
+            admin_name = f"{message.from_user.first_name} (@{message.from_user.username})" if message.from_user.username else message.from_user.first_name
+            action = f"просмотр логов за {days} дней"
+            target_info = f"админ {target_admin_id}" if target_admin_id else "все админы"
+            log_admin_action(user_id, admin_name, action, target_info)
+        
+    except Exception:
+        logger.exception("Error in /adminlogs handler: %s", message)
 
     @bot.message_handler(commands=['logstats'])
     def show_log_statistics(message):
