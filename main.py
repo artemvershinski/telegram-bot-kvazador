@@ -135,6 +135,14 @@ def init_db():
                      (user_id INTEGER PRIMARY KEY, username TEXT, first_name TEXT, last_name TEXT, date_added TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
         c.execute('''CREATE TABLE IF NOT EXISTS admins
                      (user_id INTEGER PRIMARY KEY, username TEXT, first_name TEXT, is_main_admin BOOLEAN DEFAULT FALSE, date_added TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
+        c.execute('''CREATE TABLE IF NOT EXISTS bans
+                     (user_id INTEGER PRIMARY KEY, 
+                      ban_type TEXT NOT NULL,
+                      ban_duration_seconds INTEGER,
+                      banned_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                      ban_reason TEXT,
+                      banned_by INTEGER,
+                      unban_request_date TIMESTAMP)''')
         
         # Добавляем главного админа если его нет
         c.execute("INSERT OR IGNORE INTO admins (user_id, username, first_name, is_main_admin) VALUES (?, ?, ?, ?)",
@@ -314,7 +322,138 @@ def get_admin_logs(admin_id=None, days=30):
         logger.exception("Failed to read admin logs: %s", e)
         return []
 
+# ==================== СИСТЕМА БАНОВ ====================
+
+def ban_user(user_id, ban_type, duration_seconds=None, reason="", banned_by=None):
+    """Банит пользователя"""
+    try:
+        conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+        c = conn.cursor()
+        
+        if ban_type == "permanent":
+            c.execute('''INSERT OR REPLACE INTO bans 
+                        (user_id, ban_type, ban_duration_seconds, ban_reason, banned_by) 
+                        VALUES (?, ?, ?, ?, ?)''',
+                     (user_id, ban_type, None, reason, banned_by))
+        else:  # temporary
+            c.execute('''INSERT OR REPLACE INTO bans 
+                        (user_id, ban_type, ban_duration_seconds, ban_reason, banned_by) 
+                        VALUES (?, ?, ?, ?, ?)''',
+                     (user_id, ban_type, duration_seconds, reason, banned_by))
+        
+        conn.commit()
+        conn.close()
+        logger.info("Banned user %s: type=%s, duration=%s", user_id, ban_type, duration_seconds)
+        return True
+    except Exception as e:
+        logger.exception("Failed to ban user %s: %s", user_id, e)
+        return False
+
+def unban_user(user_id):
+    """Разбанивает пользователя"""
+    try:
+        conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+        c = conn.cursor()
+        c.execute("DELETE FROM bans WHERE user_id = ?", (user_id,))
+        conn.commit()
+        conn.close()
+        logger.info("Unbanned user %s", user_id)
+        return True
+    except Exception as e:
+        logger.exception("Failed to unban user %s: %s", user_id, e)
+        return False
+
+def is_banned(user_id):
+    """Проверяет, забанен ли пользователь и возвращает информацию о бане"""
+    try:
+        conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+        c = conn.cursor()
+        c.execute("SELECT ban_type, ban_duration_seconds, banned_at, ban_reason FROM bans WHERE user_id = ?", (user_id,))
+        result = c.fetchone()
+        conn.close()
+        
+        if not result:
+            return None
+        
+        ban_type, duration_seconds, banned_at, reason = result
+        
+        # Для временного бана проверяем истекло ли время
+        if ban_type == "temporary" and duration_seconds:
+            banned_time = datetime.datetime.strptime(banned_at, '%Y-%m-%d %H:%M:%S')
+            current_time = datetime.datetime.now()
+            time_passed = (current_time - banned_time).total_seconds()
+            
+            if time_passed >= duration_seconds:
+                # Время бана истекло - разбаниваем
+                unban_user(user_id)
+                return None
+            else:
+                time_left = duration_seconds - time_passed
+                return {
+                    'type': ban_type,
+                    'time_left': time_left,
+                    'reason': reason
+                }
+        
+        # Для пермача или если время не истекло
+        return {
+            'type': ban_type,
+            'reason': reason
+        }
+    except Exception as e:
+        logger.exception("Failed to check ban status for %s: %s", user_id, e)
+        return None
+
+def format_time_left(seconds):
+    """Форматирует оставшееся время в читаемый вид"""
+    if seconds < 60:
+        return f"{int(seconds)} секунд"
+    elif seconds < 3600:
+        minutes = int(seconds // 60)
+        secs = int(seconds % 60)
+        return f"{minutes} минут {secs} секунд"
+    else:
+        hours = int(seconds // 3600)
+        minutes = int((seconds % 3600) // 60)
+        return f"{hours} часов {minutes} минут"
+
+def can_request_unban(user_id):
+    """Проверяет, может ли пользователь запросить разбан (прошла ли неделя с последнего запроса)"""
+    try:
+        conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+        c = conn.cursor()
+        c.execute("SELECT unban_request_date FROM bans WHERE user_id = ? AND ban_type = 'permanent'", (user_id,))
+        result = c.fetchone()
+        conn.close()
+        
+        if not result or not result[0]:
+            return True  # Если даты запроса нет, можно запросить
+        
+        last_request = datetime.datetime.strptime(result[0], '%Y-%m-%d %H:%M:%S')
+        current_time = datetime.datetime.now()
+        time_passed = (current_time - last_request).total_seconds()
+        
+        # 7 дней в секундах
+        return time_passed >= 7 * 24 * 3600
+    except Exception as e:
+        logger.exception("Failed to check unban request for %s: %s", user_id, e)
+        return False
+
+def update_unban_request_date(user_id):
+    """Обновляет дату последнего запроса на разбан"""
+    try:
+        conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+        c = conn.cursor()
+        c.execute("UPDATE bans SET unban_request_date = CURRENT_TIMESTAMP WHERE user_id = ?", (user_id,))
+        conn.commit()
+        conn.close()
+        return True
+    except Exception as e:
+        logger.exception("Failed to update unban request date for %s: %s", user_id, e)
+        return False
+
 user_reply_mode = {}
+user_unban_mode = {}
 
 # ----------------------------
 # Хэндлеры бота
@@ -324,6 +463,17 @@ if bot:
     def send_welcome(message):
         try:
             user_id = int(message.from_user.id)
+            
+            # Проверяем бан
+            ban_info = is_banned(user_id)
+            if ban_info:
+                if ban_info['type'] == 'permanent':
+                    bot.send_message(user_id, "🚫 Вы забанены навсегда. Для разбана используйте /unban")
+                else:
+                    time_left = format_time_left(ban_info['time_left'])
+                    bot.send_message(user_id, f"🚫 Вы забанены. До разбана осталось: {time_left}")
+                return
+
             register_user(user_id,
                           message.from_user.username,
                           message.from_user.first_name,
@@ -342,6 +492,211 @@ if bot:
             bot.send_message(user_id, welcome_text, reply_markup=markup)
         except Exception:
             logger.exception("Error in /start handler for message: %s", message)
+
+    # ==================== КОМАНДЫ БАНОВ ====================
+
+    @bot.message_handler(commands=['ban'])
+    def ban_command(message):
+        """Временный бан пользователя"""
+        try:
+            user_id = int(message.from_user.id)
+            
+            if not is_admin(user_id):
+                bot.send_message(user_id, "❌ Эта команда только для администраторов.")
+                return
+
+            parts = message.text.split()
+            if len(parts) < 4:
+                bot.send_message(user_id, "❌ Используй: /ban user_id время_в_секундах причина\n\nПример:\n/ban 123456789 3600 Спам\n/ban 123456789 86400 Оскорбления")
+                return
+
+            try:
+                target_id = int(parts[1])
+                duration = int(parts[2])
+                reason = ' '.join(parts[3:])
+            except ValueError:
+                bot.send_message(user_id, "❌ Неверный формат. user_id и время должны быть числами.")
+                return
+
+            if duration <= 0:
+                bot.send_message(user_id, "❌ Время бана должно быть положительным числом.")
+                return
+
+            # Нельзя забанить админа
+            if is_admin(target_id):
+                bot.send_message(user_id, "❌ Нельзя забанить администратора.")
+                return
+
+            if ban_user(target_id, "temporary", duration, reason, user_id):
+                # Уведомляем пользователя о бане
+                try:
+                    duration_text = format_time_left(duration)
+                    bot.send_message(target_id, f"🚫 Вы были забанены на {duration_text}.\nПричина: {reason}")
+                except Exception as e:
+                    logger.warning("Could not notify banned user %s: %s", target_id, e)
+
+                bot.send_message(user_id, f"✅ Пользователь {target_id} забанен на {format_time_left(duration)}.\nПричина: {reason}")
+                
+                # Логируем действие
+                admin_name = f"{message.from_user.first_name} (@{message.from_user.username})" if message.from_user.username else message.from_user.first_name
+                log_admin_action(user_id, admin_name, "временный бан", f"пользователь: {target_id}, время: {duration}сек, причина: {reason}")
+            else:
+                bot.send_message(user_id, "❌ Ошибка при бане пользователя.")
+                
+        except Exception:
+            logger.exception("Error in /ban handler: %s", message)
+
+    @bot.message_handler(commands=['spermban'])
+    def permanent_ban_command(message):
+        """Перманентный бан пользователя"""
+        try:
+            user_id = int(message.from_user.id)
+            
+            if not is_admin(user_id):
+                bot.send_message(user_id, "❌ Эта команда только для администраторов.")
+                return
+
+            parts = message.text.split()
+            if len(parts) < 3:
+                bot.send_message(user_id, "❌ Используй: /spermban user_id причина\n\nПример:\n/spermban 123456789 Спам\n/spermban 123456789 Оскорбления")
+                return
+
+            try:
+                target_id = int(parts[1])
+                reason = ' '.join(parts[2:])
+            except ValueError:
+                bot.send_message(user_id, "❌ Неверный user_id. Это должно быть целое число.")
+                return
+
+            # Нельзя забанить админа
+            if is_admin(target_id):
+                bot.send_message(user_id, "❌ Нельзя забанить администратора.")
+                return
+
+            if ban_user(target_id, "permanent", None, reason, user_id):
+                # Уведомляем пользователя о бане
+                try:
+                    bot.send_message(target_id, f"🚫 Вы были забанены навсегда.\nПричина: {reason}\n\nДля запроса разбана используйте /unban")
+                except Exception as e:
+                    logger.warning("Could not notify banned user %s: %s", target_id, e)
+
+                bot.send_message(user_id, f"✅ Пользователь {target_id} забанен навсегда.\nПричина: {reason}")
+                
+                # Логируем действие
+                admin_name = f"{message.from_user.first_name} (@{message.from_user.username})" if message.from_user.username else message.from_user.first_name
+                log_admin_action(user_id, admin_name, "перманентный бан", f"пользователь: {target_id}, причина: {reason}")
+            else:
+                bot.send_message(user_id, "❌ Ошибка при бане пользователя.")
+                
+        except Exception:
+            logger.exception("Error in /spermban handler: %s", message)
+
+    @bot.message_handler(commands=['unban'])
+    def unban_request_command(message):
+        """Запрос разбана от пользователя (только для пермаченных)"""
+        try:
+            user_id = int(message.from_user.id)
+            
+            # Проверяем бан
+            ban_info = is_banned(user_id)
+            if not ban_info or ban_info['type'] != 'permanent':
+                bot.send_message(user_id, "❌ Эта команда только для перманентно забаненных пользователей.")
+                return
+
+            # Проверяем можно ли запросить разбан (прошла ли неделя)
+            if not can_request_unban(user_id):
+                bot.send_message(user_id, "❌ Вы уже отправляли запрос на разбан. Следующая попытка будет доступна через неделю после последнего запроса.")
+                return
+
+            # Включаем режим запроса разбана
+            user_unban_mode[user_id] = True
+            bot.send_message(user_id, "✍️ Напишите сообщение для модераторов, почему мы должны вас разбанить. Постарайтесь, ведь следующая попытка будет только через неделю.")
+            
+        except Exception:
+            logger.exception("Error in /unban handler: %s", message)
+
+    @bot.message_handler(commands=['obossat'])
+    def unban_command(message):
+        """Разбан пользователя администратором"""
+        try:
+            user_id = int(message.from_user.id)
+            
+            if not is_admin(user_id):
+                bot.send_message(user_id, "❌ Эта команда только для администраторов.")
+                return
+
+            parts = message.text.split()
+            if len(parts) < 2:
+                bot.send_message(user_id, "❌ Используй: /obossat user_id\n\nПример:\n/obossat 123456789")
+                return
+
+            try:
+                target_id = int(parts[1])
+            except ValueError:
+                bot.send_message(user_id, "❌ Неверный user_id. Это должно быть целое число.")
+                return
+
+            # Проверяем забанен ли пользователь
+            ban_info = is_banned(target_id)
+            if not ban_info:
+                bot.send_message(user_id, f"ℹ️ Пользователь {target_id} не забанен.")
+                return
+
+            if unban_user(target_id):
+                # Уведомляем пользователя о разбане
+                unban_message = "✅ Вы были разбанены. Больше не нарушайте правила!"
+                if len(parts) > 2:
+                    unban_message = ' '.join(parts[2:])
+                
+                try:
+                    bot.send_message(target_id, unban_message)
+                except Exception as e:
+                    logger.warning("Could not notify unbanned user %s: %s", target_id, e)
+
+                bot.send_message(user_id, f"✅ Пользователь {target_id} разбанен.")
+                
+                # Логируем действие
+                admin_name = f"{message.from_user.first_name} (@{message.from_user.username})" if message.from_user.username else message.from_user.first_name
+                log_admin_action(user_id, admin_name, "разбан пользователя", f"пользователь: {target_id}")
+            else:
+                bot.send_message(user_id, "❌ Ошибка при разбане пользователя.")
+                
+        except Exception:
+            logger.exception("Error in /obossat handler: %s", message)
+
+    # Обработчик для сообщений в режиме запроса разбана
+    @bot.message_handler(func=lambda message: int(message.from_user.id) in user_unban_mode and user_unban_mode[int(message.from_user.id)])
+    def handle_unban_request(message):
+        try:
+            user_id = int(message.from_user.id)
+            
+            if message.content_type != 'text':
+                bot.send_message(user_id, "❌ Пожалуйста, отправьте текстовое сообщение.")
+                return
+
+            # Отправляем запрос всем админам
+            user_info = f"👤 Пользователь {message.from_user.first_name}"
+            if message.from_user.username:
+                user_info += f" (@{message.from_user.username})"
+            user_info += f" (ID: {user_id}) запрашивает разбан:\n\n{message.text}"
+
+            admins = get_all_admins()
+            for admin in admins:
+                try:
+                    bot.send_message(admin[0], user_info)
+                except Exception as e:
+                    logger.error(f"Failed to send unban request to admin {admin[0]}: {e}")
+
+            # Обновляем дату запроса
+            update_unban_request_date(user_id)
+            
+            # Выключаем режим запроса
+            user_unban_mode[user_id] = False
+            
+            bot.send_message(user_id, "✅ Ваш запрос на разбан отправлен модераторам. Следующая попытка будет доступна через неделю.")
+            
+        except Exception:
+            logger.exception("Error in unban request handler: %s", message)
 
     # ==================== КОМАНДЫ ДЛЯ УПРАВЛЕНИЯ ЛОГАМИ ====================
 
@@ -559,6 +914,10 @@ if bot:
                         elif "просмотр списка администраторов" in action_part:
                             formatted_action = "просмотр списка администраторов"
                         
+                        # Форматируем баны
+                        elif "временный бан" in action_part or "перманентный бан" in action_part or "разбан пользователя" in action_part:
+                            formatted_action = action_part
+                        
                         log_text += f"{time_part} - {formatted_action}\n"
                 
                 log_text += "\n"
@@ -722,7 +1081,10 @@ if bot:
                                                 "Теперь вам доступны команды:\n"
                                                 "/stats - статистика пользователей\n"
                                                 "/getusers - список всех пользователей\n"
-                                                "/sendall - рассылка сообщений")
+                                                "/sendall - рассылка сообщений\n"
+                                                "/ban - временный бан\n"
+                                                "/spermban - перманентный бан\n"
+                                                "/obossat - разбан")
                 except Exception:
                     logger.warning("Could not notify new admin %s", target_id)
             else:
@@ -818,7 +1180,26 @@ if bot:
                 return
 
             count = get_user_count()
-            bot.send_message(user_id, f"📊 Статистика бота:\n\n👥 Всего пользователей: {count}")
+            
+            # Получаем статистику по банам
+            try:
+                conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+                c = conn.cursor()
+                c.execute("SELECT COUNT(*) FROM bans WHERE ban_type = 'permanent'")
+                permanent_bans = c.fetchone()[0]
+                c.execute("SELECT COUNT(*) FROM bans WHERE ban_type = 'temporary'")
+                temporary_bans = c.fetchone()[0]
+                conn.close()
+            except Exception as e:
+                logger.error("Failed to get ban stats: %s", e)
+                permanent_bans = 0
+                temporary_bans = 0
+
+            stats_text = f"📊 Статистика бота:\n\n👥 Всего пользователей: {count}\n"
+            stats_text += f"🚫 Перманентно забанено: {permanent_bans}\n"
+            stats_text += f"⏳ Временно забанено: {temporary_bans}"
+            
+            bot.send_message(user_id, stats_text)
             
             # Логируем действие
             admin_name = f"{message.from_user.first_name} (@{message.from_user.username})" if message.from_user.username else message.from_user.first_name
@@ -901,6 +1282,10 @@ if bot:
             
             for user in users:
                 try:
+                    # Пропускаем забаненных пользователей
+                    if is_banned(user[0]):
+                        continue
+                        
                     bot.send_message(user[0], f"{broadcast_text}")
                     success_count += 1
                     time.sleep(0.1)  # Задержка чтобы не превысить лимиты Telegram
@@ -910,7 +1295,8 @@ if bot:
 
             bot.send_message(user_id, f"✅ Рассылка завершена:\n\n"
                                      f"✅ Успешно: {success_count}\n"
-                                     f"❌ Не удалось: {fail_count}")
+                                     f"❌ Не удалось: {fail_count}\n"
+                                     f"🚫 Пропущено (забанены): {len(users) - success_count - fail_count}")
             
             # Логируем действие
             admin_name = f"{message.from_user.first_name} (@{message.from_user.username})" if message.from_user.username else message.from_user.first_name
@@ -925,6 +1311,16 @@ if bot:
     def handle_contact_request(message):
         try:
             user_id = int(message.from_user.id)
+            
+            # Проверяем бан
+            ban_info = is_banned(user_id)
+            if ban_info:
+                if ban_info['type'] == 'permanent':
+                    bot.send_message(user_id, "🚫 Вы забанены навсегда и не можете использовать эту функцию.")
+                else:
+                    time_left = format_time_left(ban_info['time_left'])
+                    bot.send_message(user_id, f"🚫 Вы забанены и не можете использовать эту функцию. До разбана осталось: {time_left}")
+                return
             
             # Проверка кулдауна для кнопки
             cooldown_remaining = check_button_cooldown(user_id)
@@ -1018,6 +1414,11 @@ if bot:
                 bot.send_message(user_id, "❌ Целевой пользователь не найден.")
                 return
 
+            # Проверяем не забанен ли пользователь
+            if is_banned(target_user_id):
+                bot.send_message(user_id, "❌ Нельзя отправить сообщение забаненному пользователю.")
+                return
+
             try:
                 # Отправляем ответ пользователю
                 bot.send_message(target_user_id, f"💌 Поступил ответ от kvazador:\n\n{message.text}")
@@ -1045,6 +1446,16 @@ if bot:
             # Специальная клавиша уже обрабатывается отдельно
             if message.text == "📞 Попросить связаться со мной.":
                 return handle_contact_request(message)
+
+            # Проверяем бан
+            ban_info = is_banned(user_id)
+            if ban_info:
+                if ban_info['type'] == 'permanent':
+                    bot.send_message(user_id, "🚫 Вы забанены навсегда. Для разбана используйте /unban")
+                else:
+                    time_left = format_time_left(ban_info['time_left'])
+                    bot.send_message(user_id, f"🚫 Вы забанены. До разбана осталось: {time_left}")
+                return
 
             # Проверка кулдауна (кроме админов)
             if not is_admin(user_id):
@@ -1088,6 +1499,16 @@ if bot:
     def forward_media_message(message):
         try:
             user_id = int(message.from_user.id)
+
+            # Проверяем бан
+            ban_info = is_banned(user_id)
+            if ban_info:
+                if ban_info['type'] == 'permanent':
+                    bot.send_message(user_id, "🚫 Вы забанены навсегда и не можете отправлять медиа.")
+                else:
+                    time_left = format_time_left(ban_info['time_left'])
+                    bot.send_message(user_id, f"🚫 Вы забанены и не можете отправлять медиа. До разбана осталось: {time_left}")
+                return
 
             # Проверка кулдауна (кроме админов)
             if not is_admin(user_id):
@@ -1142,6 +1563,16 @@ if bot:
     def forward_contact_location(message):
         try:
             user_id = int(message.from_user.id)
+
+            # Проверяем бан
+            ban_info = is_banned(user_id)
+            if ban_info:
+                if ban_info['type'] == 'permanent':
+                    bot.send_message(user_id, "🚫 Вы забанены навсегда и не можете отправлять контакты/локации.")
+                else:
+                    time_left = format_time_left(ban_info['time_left'])
+                    bot.send_message(user_id, f"🚫 Вы забанены и не можете отправлять контакты/локации. До разбана осталось: {time_left}")
+                return
 
             # Проверка кулдауна (кроме админов)
             if not is_admin(user_id):
