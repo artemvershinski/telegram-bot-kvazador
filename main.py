@@ -16,6 +16,9 @@ from telebot.types import ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemo
 # Настройка логирования
 # ----------------------------
 LOGFILE = os.environ.get("BOT_LOGFILE", "bot.log")
+ADMIN_LOGFILE = os.environ.get("ADMIN_LOGFILE", "admin_actions.log")
+
+# Настройка основного логгера
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
@@ -25,6 +28,21 @@ logging.basicConfig(
     ]
 )
 logger = logging.getLogger(__name__)
+
+# Настройка логгера для действий администраторов
+admin_logger = logging.getLogger('admin_actions')
+admin_logger.setLevel(logging.INFO)
+admin_handler = logging.FileHandler(ADMIN_LOGFILE, encoding='utf-8')
+admin_handler.setFormatter(logging.Formatter('%(asctime)s - %(message)s'))
+admin_logger.addHandler(admin_handler)
+admin_logger.propagate = False
+
+def log_admin_action(admin_id, admin_name, action, target_info=""):
+    """Логирует действия администраторов"""
+    log_message = f"ADMIN {admin_id} ({admin_name}) - {action}"
+    if target_info:
+        log_message += f" - {target_info}"
+    admin_logger.info(log_message)
 
 # ----------------------------
 # Ограничение времени между сообщениями (5 секунд)
@@ -233,6 +251,41 @@ def get_all_admins():
         logger.exception("Failed to get admins list")
         return []
 
+def get_admin_logs(admin_id=None, days=30):
+    """Возвращает логи администраторов за указанный период"""
+    try:
+        cutoff_date = (datetime.datetime.now() - datetime.timedelta(days=days)).strftime('%Y-%m-%d %H:%M:%S')
+        
+        with open(ADMIN_LOGFILE, 'r', encoding='utf-8') as f:
+            lines = f.readlines()
+        
+        logs = []
+        for line in lines:
+            try:
+                # Парсим строку лога
+                parts = line.strip().split(' - ', 2)
+                if len(parts) >= 3:
+                    timestamp = parts[0]
+                    log_data = parts[2]
+                    
+                    # Проверяем дату
+                    log_datetime = datetime.datetime.strptime(timestamp, '%Y-%m-%d %H:%M:%S,%f')
+                    if log_datetime >= datetime.datetime.now() - datetime.timedelta(days=days):
+                        
+                        # Если указан конкретный админ, фильтруем по нему
+                        if admin_id:
+                            if f"ADMIN {admin_id}" in log_data:
+                                logs.append(line.strip())
+                        else:
+                            logs.append(line.strip())
+            except Exception as e:
+                continue
+        
+        return logs
+    except Exception as e:
+        logger.exception("Failed to read admin logs: %s", e)
+        return []
+
 user_reply_mode = {}
 
 # ----------------------------
@@ -261,6 +314,192 @@ if bot:
             bot.send_message(user_id, welcome_text, reply_markup=markup)
         except Exception:
             logger.exception("Error in /start handler for message: %s", message)
+
+    # ==================== КОМАНДЫ ДЛЯ ПРОСМОТРА ЛОГОВ ====================
+
+    @bot.message_handler(commands=['adminlogs'])
+    def show_admin_logs(message):
+        """Показывает логи администраторов (только для главного админа)"""
+        try:
+            user_id = int(message.from_user.id)
+            
+            if not is_main_admin(user_id):
+                bot.send_message(user_id, "❌ Эта команда только для главного администратора.")
+                return
+
+            parts = message.text.split()
+            days = 30  # по умолчанию за последний месяц
+            
+            # Парсим параметры
+            target_admin_id = None
+            if len(parts) >= 2:
+                # Проверяем, является ли первый параметр ID админа
+                try:
+                    target_admin_id = int(parts[1])
+                except ValueError:
+                    # Если не число, проверяем ключевые слова
+                    if parts[1].lower() == 'all':
+                        target_admin_id = None
+                    else:
+                        bot.send_message(user_id, "❌ Используй:\n"
+                                                "/adminlogs - логи всех админов за месяц\n"
+                                                "/adminlogs all - то же самое\n"
+                                                "/adminlogs 123456789 - логи конкретного админа\n"
+                                                "/adminlogs 123456789 7 - логи админа за 7 дней")
+                        return
+            
+            # Проверяем количество дней
+            if len(parts) >= 3:
+                try:
+                    days = int(parts[2])
+                    if days <= 0 or days > 365:
+                        bot.send_message(user_id, "❌ Количество дней должно быть от 1 до 365")
+                        return
+                except ValueError:
+                    bot.send_message(user_id, "❌ Количество дней должно быть числом")
+                    return
+
+            bot.send_message(user_id, f"🔄 Получаю логи за последние {days} дней...")
+
+            logs = get_admin_logs(target_admin_id, days)
+            
+            if not logs:
+                if target_admin_id:
+                    bot.send_message(user_id, f"📭 Логов для администратора {target_admin_id} за последние {days} дней не найдено.")
+                else:
+                    bot.send_message(user_id, f"📭 Логов администраторов за последние {days} дней не найдено.")
+                return
+
+            # Формируем статистику
+            if target_admin_id:
+                log_text = f"📊 Логи администратора {target_admin_id} за последние {days} дней:\n\n"
+            else:
+                log_text = f"📊 Логи всех администраторов за последние {days} дней:\n\n"
+
+            # Группируем логи по датам для лучшей читаемости
+            date_groups = {}
+            for log in logs:
+                try:
+                    date_part = log.split(' ')[0]  # Берем только дату
+                    if date_part not in date_groups:
+                        date_groups[date_part] = []
+                    date_groups[date_part].append(log)
+                except:
+                    continue
+
+            # Отправляем логи сгруппированно по датам
+            for date, date_logs in sorted(date_groups.items(), reverse=True):
+                date_log_text = f"📅 {date}:\n"
+                
+                for log in date_logs:
+                    # Убираем временную метку для компактности
+                    log_parts = log.split(' - ', 2)
+                    if len(log_parts) >= 3:
+                        time_part = log_parts[0].split(' ')[1][:8]  # Берем только время
+                        action_part = log_parts[2]
+                        date_log_text += f"🕒 {time_part} - {action_part}\n"
+                
+                # Если сообщение становится слишком длинным, отправляем часть
+                if len(log_text + date_log_text) > 4000:
+                    bot.send_message(user_id, log_text)
+                    log_text = date_log_text
+                else:
+                    log_text += date_log_text + "\n"
+
+            if log_text:
+                bot.send_message(user_id, log_text)
+
+            # Статистика
+            bot.send_message(user_id, f"📈 Всего записей: {len(logs)}")
+
+            # Логируем запрос логов
+            admin_name = f"{message.from_user.first_name} (@{message.from_user.username})" if message.from_user.username else message.from_user.first_name
+            action = f"просмотр логов за {days} дней"
+            target_info = f"админ {target_admin_id}" if target_admin_id else "все админы"
+            log_admin_action(user_id, admin_name, action, target_info)
+            
+        except Exception:
+            logger.exception("Error in /adminlogs handler: %s", message)
+
+    @bot.message_handler(commands=['logstats'])
+    def show_log_statistics(message):
+        """Показывает статистику по логам администраторов"""
+        try:
+            user_id = int(message.from_user.id)
+            
+            if not is_main_admin(user_id):
+                bot.send_message(user_id, "❌ Эта команда только для главного администратора.")
+                return
+
+            parts = message.text.split()
+            days = 30  # по умолчанию за последний месяц
+            
+            if len(parts) >= 2:
+                try:
+                    days = int(parts[1])
+                    if days <= 0 or days > 365:
+                        bot.send_message(user_id, "❌ Количество дней должно быть от 1 до 365")
+                        return
+                except ValueError:
+                    bot.send_message(user_id, "❌ Количество дней должно быть числом")
+                    return
+
+            bot.send_message(user_id, f"🔄 Анализирую логи за последние {days} дней...")
+
+            logs = get_admin_logs(None, days)
+            
+            if not logs:
+                bot.send_message(user_id, f"📭 Логов администраторов за последние {days} дней не найдено.")
+                return
+
+            # Анализируем логи
+            admin_actions = {}
+            action_types = {}
+            
+            for log in logs:
+                try:
+                    # Парсим строку лога для извлечения ID админа и действия
+                    parts = log.split(' - ')
+                    if len(parts) >= 3:
+                        admin_part = parts[1]
+                        action_part = parts[2]
+                        
+                        # Извлекаем ID админа
+                        admin_id = admin_part.split(' ')[1]
+                        
+                        # Считаем действия по админам
+                        if admin_id not in admin_actions:
+                            admin_actions[admin_id] = 0
+                        admin_actions[admin_id] += 1
+                        
+                        # Считаем типы действий
+                        action_type = action_part.split(' ')[0]
+                        if action_type not in action_types:
+                            action_types[action_type] = 0
+                        action_types[action_type] += 1
+                except:
+                    continue
+
+            # Формируем статистику
+            stats_text = f"📊 Статистика логов администраторов за {days} дней:\n\n"
+            stats_text += f"📈 Всего записей: {len(logs)}\n\n"
+            
+            stats_text += "👥 Активность по администраторам:\n"
+            for admin_id, count in sorted(admin_actions.items(), key=lambda x: x[1], reverse=True):
+                stats_text += f"• ID {admin_id}: {count} действий\n"
+            
+            stats_text += "\n📋 Типы действий:\n"
+            for action_type, count in sorted(action_types.items(), key=lambda x: x[1], reverse=True):
+                stats_text += f"• {action_type}: {count} раз\n"
+
+            bot.send_message(user_id, stats_text)
+
+            # Логируем запрос статистики
+            admin_name = f"{message.from_user.first_name} (@{message.from_user.username})" if message.from_user.username else message.from_user.first_name
+            log_admin_action(user_id, admin_name, f"просмотр статистики логов за {days} дней")
+            
+        except Exception:
+            logger.exception("Error in /logstats handler: %s", message)
 
     # ==================== СИСТЕМА АДМИНИСТРИРОВАНИЯ ====================
 
@@ -301,6 +540,10 @@ if bot:
 
             if add_admin(target_id, username, first_name):
                 bot.send_message(user_id, f"✅ Пользователь {first_name} (ID: {target_id}) добавлен как администратор.")
+                
+                # Логируем действие
+                admin_name = f"{message.from_user.first_name} (@{message.from_user.username})" if message.from_user.username else message.from_user.first_name
+                log_admin_action(user_id, admin_name, "добавление администратора", f"новый админ: {target_id} ({first_name})")
                 
                 # Уведомляем нового админа
                 try:
@@ -345,6 +588,10 @@ if bot:
             if remove_admin(target_id):
                 bot.send_message(user_id, f"✅ Администратор (ID: {target_id}) удален.")
                 
+                # Логируем действие
+                admin_name = f"{message.from_user.first_name} (@{message.from_user.username})" if message.from_user.username else message.from_user.first_name
+                log_admin_action(user_id, admin_name, "удаление администратора", f"удален админ: {target_id}")
+                
                 # Уведомляем бывшего админа
                 try:
                     bot.send_message(target_id, "ℹ️ Ваши права администратора были отозваны.")
@@ -382,6 +629,10 @@ if bot:
 
             bot.send_message(user_id, admin_list)
             
+            # Логируем действие
+            admin_name = f"{message.from_user.first_name} (@{message.from_user.username})" if message.from_user.username else message.from_user.first_name
+            log_admin_action(user_id, admin_name, "просмотр списка администраторов")
+            
         except Exception:
             logger.exception("Error in /admins handler: %s", message)
 
@@ -397,6 +648,10 @@ if bot:
 
             count = get_user_count()
             bot.send_message(user_id, f"📊 Статистика бота:\n\n👥 Всего пользователей: {count}")
+            
+            # Логируем действие
+            admin_name = f"{message.from_user.first_name} (@{message.from_user.username})" if message.from_user.username else message.from_user.first_name
+            log_admin_action(user_id, admin_name, "просмотр статистики")
             
         except Exception:
             logger.exception("Error in /stats handler: %s", message)
@@ -438,6 +693,10 @@ if bot:
 
             if user_list:
                 bot.send_message(user_id, user_list)
+                
+            # Логируем действие
+            admin_name = f"{message.from_user.first_name} (@{message.from_user.username})" if message.from_user.username else message.from_user.first_name
+            log_admin_action(user_id, admin_name, "просмотр списка пользователей")
                 
         except Exception:
             logger.exception("Error in /getusers handler: %s", message)
@@ -482,10 +741,14 @@ if bot:
                                      f"✅ Успешно: {success_count}\n"
                                      f"❌ Не удалось: {fail_count}")
             
+            # Логируем действие
+            admin_name = f"{message.from_user.first_name} (@{message.from_user.username})" if message.from_user.username else message.from_user.first_name
+            log_admin_action(user_id, admin_name, "рассылка сообщений", f"получателей: {len(users)}, успешно: {success_count}")
+            
         except Exception:
             logger.exception("Error in /sendall handler: %s", message)
 
-    # ==================== СТАРЫЕ КОМАНДЫ (остаются без изменений) ====================
+    # ==================== ОСТАЛЬНЫЕ ОБРАБОТЧИКИ (без изменений) ====================
 
     @bot.message_handler(func=lambda message: message.text == "📞 Попросить связаться со мной.")
     def handle_contact_request(message):
@@ -550,6 +813,11 @@ if bot:
 
             user_reply_mode[user_id] = target_id
             bot.send_message(user_id, f"🔹 Режим ответа включен для пользователя ID: {target_id}")
+            
+            # Логируем действие
+            admin_name = f"{message.from_user.first_name} (@{message.from_user.username})" if message.from_user.username else message.from_user.first_name
+            log_admin_action(user_id, admin_name, "включение режима ответа", f"пользователь: {target_id}")
+            
         except Exception:
             logger.exception("Error in /reply handler: %s", message)
 
@@ -561,6 +829,10 @@ if bot:
                 if user_id in user_reply_mode:
                     del user_reply_mode[user_id]
                     bot.send_message(user_id, "🔹 Режим ответа выключен.")
+                    
+                    # Логируем действие
+                    admin_name = f"{message.from_user.first_name} (@{message.from_user.username})" if message.from_user.username else message.from_user.first_name
+                    log_admin_action(user_id, admin_name, "выключение режима ответа")
                 else:
                     bot.send_message(user_id, "🔹 Режим ответа не был включен.")
         except Exception:
@@ -582,6 +854,11 @@ if bot:
             try:
                 bot.send_message(target_user_id, f"💌 Поступил ответ от kvazador:\n\n{message.text}")
                 bot.send_message(user_id, f"✅ Ответ отправлен пользователю ID: {target_user_id}")
+                
+                # Логируем действие
+                admin_name = f"{message.from_user.first_name} (@{message.from_user.username})" if message.from_user.username else message.from_user.first_name
+                log_admin_action(user_id, admin_name, "отправка ответа пользователю", f"пользователь: {target_user_id}")
+                
             except Exception as e:
                 logger.exception("Failed to send admin reply to %s: %s", target_user_id, e)
                 bot.send_message(user_id, f"❌ Ошибка отправки: {e}")
