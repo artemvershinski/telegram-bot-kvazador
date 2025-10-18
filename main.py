@@ -62,15 +62,6 @@ def get_moscow_time():
     """Возвращает текущее время в формате UTC+3"""
     return datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=3))).strftime('%Y-%m-%d %H:%M:%S')
 
-def get_user_info(bot, user_id):
-    """Получает информацию о пользователе с username"""
-    try:
-        user_chat = bot.get_chat(user_id)
-        username = f"@{user_chat.username}" if user_chat.username else user_chat.first_name
-        return username
-    except:
-        return f"ID: {user_id}"
-
 def log_admin_action(admin_id, admin_name, action, target_info=""):
     """Логирует действия администраторов с московским временем"""
     log_message = f"ADMIN {admin_id} ({admin_name}) - {action}"
@@ -525,6 +516,85 @@ if bot:
         except Exception:
             logger.exception("Error in /start handler for message: %s", message)
 
+    @bot.message_handler(commands=['help'])
+    def help_command(message):
+        """Показывает список доступных команд для текущего пользователя"""
+        try:
+            user_id = int(message.from_user.id)
+            is_user_admin = is_admin(user_id)
+            ban_info = is_banned(user_id)
+            
+            help_text = "🛠️ **Доступные команды:**\n\n"
+            
+            # Базовые команды для всех
+            help_text += "🔹 **Основные:**\n"
+            help_text += "/start - Начать работу с ботом\n"
+            help_text += "/help - Показать это сообщение\n\n"
+            
+            # Команды для забаненных
+            if ban_info and ban_info['type'] == 'permanent':
+                help_text += "🔸 **Для забаненных:**\n"
+                help_text += "/unban - Запросить разбан\n\n"
+            
+            # Команды для обычных пользователей (не забаненных)
+            if not ban_info:
+                help_text += "💬 **Общение:**\n"
+                help_text += "Просто напиши сообщение - оно дойдет до kvazador\n"
+                help_text += "Кнопка '📞 Попросить связаться' - для срочных вопросов\n\n"
+            
+            # Команды для админов
+            if is_user_admin:
+                help_text += "👑 **Администратор:**\n"
+                help_text += "/stats - Статистика бота\n"
+                help_text += "/getusers - Список пользователей\n"
+                help_text += "/sendall - Рассылка сообщений\n"
+                help_text += "/ban - Временный бан\n"
+                help_text += "/spermban - Перманентный бан\n"
+                help_text += "/obossat - Разбан\n"
+                help_text += "/reply - Ответить пользователю\n"
+                help_text += "/stop - Закончить ответ\n\n"
+                
+                if is_main_admin(user_id):
+                    help_text += "🔧 **Главный администратор:**\n"
+                    help_text += "/addadmin - Добавить админа\n"
+                    help_text += "/removeadmin - Удалить админа\n"
+                    help_text += "/admins - Список админов\n"
+                    help_text += "/adminlogs - Логи админов\n"
+                    help_text += "/clearlogs - Очистить логи\n"
+                    help_text += "/logstats - Статистика логов\n\n"
+            
+            help_text += "💡 **Просто напиши сообщение** чтобы связаться с kvazador!"
+            
+            bot.send_message(user_id, help_text)
+            
+        except Exception:
+            logger.exception("Error in /help handler: %s", message)
+
+    # Обработчик неизвестных команд
+    @bot.message_handler(func=lambda message: message.text and message.text.startswith('/'))
+    def unknown_command(message):
+        """Обрабатывает неизвестные команды"""
+        try:
+            user_id = int(message.from_user.id)
+            command = message.text.split()[0]
+            
+            # Игнорируем известные команды
+            known_commands = [
+                '/start', '/help', '/ban', '/spermban', '/unban', '/obossat',
+                '/addadmin', '/removeadmin', '/admins', '/stats', '/getusers',
+                '/sendall', '/reply', '/stop', '/adminlogs', '/clearlogs', '/logstats'
+            ]
+            
+            if command not in known_commands:
+                bot.send_message(
+                    user_id, 
+                    f"❌ Команда {command} не найдена.\n\n"
+                    f"Используй /help чтобы увидеть все доступные команды."
+                )
+                
+        except Exception:
+            logger.exception("Error in unknown command handler: %s", message)
+
     # ==================== КОМАНДЫ БАНОВ ====================
 
     @bot.message_handler(commands=['ban'])
@@ -567,14 +637,19 @@ if bot:
                 except Exception as e:
                     logger.warning("Could not notify banned user %s: %s", target_id, e)
 
-                # Получаем username для логирования
-                target_username = get_user_info(bot, target_id)
+                # Получаем username для отображения
+                target_username = "Неизвестно"
+                try:
+                    target_chat = bot.get_chat(target_id)
+                    target_username = f"@{target_chat.username}" if target_chat.username else target_chat.first_name
+                except:
+                    target_username = f"ID: {target_id}"
 
-                bot.send_message(user_id, f"✅ Пользователь {target_username} забанен на {format_time_left(duration)}.\nПричина: {reason}")
+                bot.send_message(user_id, f"✅ Пользователь {target_username} (ID: {target_id}) забанен на {format_time_left(duration)}.\nПричина: {reason}")
                 
-                # Логируем действие с username
+                # Логируем действие с username + ID
                 admin_name = f"{message.from_user.first_name} (@{message.from_user.username})" if message.from_user.username else message.from_user.first_name
-                log_admin_action(user_id, admin_name, "временный бан", f"пользователь: {target_username}, время: {duration}сек, причина: {reason}")
+                log_admin_action(user_id, admin_name, "временный бан", f"пользователь: {target_username} (ID: {target_id}), время: {duration}сек, причина: {reason}")
             else:
                 bot.send_message(user_id, "❌ Ошибка при бане пользователя.")
                 
@@ -615,14 +690,19 @@ if bot:
                 except Exception as e:
                     logger.warning("Could not notify banned user %s: %s", target_id, e)
 
-                # Получаем username для логирования
-                target_username = get_user_info(bot, target_id)
+                # Получаем username для отображения
+                target_username = "Неизвестно"
+                try:
+                    target_chat = bot.get_chat(target_id)
+                    target_username = f"@{target_chat.username}" if target_chat.username else target_chat.first_name
+                except:
+                    target_username = f"ID: {target_id}"
 
-                bot.send_message(user_id, f"✅ Пользователь {target_username} забанен навсегда.\nПричина: {reason}")
+                bot.send_message(user_id, f"✅ Пользователь {target_username} (ID: {target_id}) забанен навсегда.\nПричина: {reason}")
                 
-                # Логируем действие с username
+                # Логируем действие с username + ID
                 admin_name = f"{message.from_user.first_name} (@{message.from_user.username})" if message.from_user.username else message.from_user.first_name
-                log_admin_action(user_id, admin_name, "перманентный бан", f"пользователь: {target_username}, причина: {reason}")
+                log_admin_action(user_id, admin_name, "перманентный бан", f"пользователь: {target_username} (ID: {target_id}), причина: {reason}")
             else:
                 bot.send_message(user_id, "❌ Ошибка при бане пользователя.")
                 
@@ -691,14 +771,19 @@ if bot:
                 except Exception as e:
                     logger.warning("Could not notify unbanned user %s: %s", target_id, e)
 
-                # Получаем username для логирования
-                target_username = get_user_info(bot, target_id)
+                # Получаем username для отображения
+                target_username = "Неизвестно"
+                try:
+                    target_chat = bot.get_chat(target_id)
+                    target_username = f"@{target_chat.username}" if target_chat.username else target_chat.first_name
+                except:
+                    target_username = f"ID: {target_id}"
 
-                bot.send_message(user_id, f"✅ Пользователь {target_username} разбанен.")
+                bot.send_message(user_id, f"✅ Пользователь {target_username} (ID: {target_id}) разбанен.")
                 
-                # Логируем действие с username
+                # Логируем действие с username + ID
                 admin_name = f"{message.from_user.first_name} (@{message.from_user.username})" if message.from_user.username else message.from_user.first_name
-                log_admin_action(user_id, admin_name, "разбан пользователя", f"пользователь: {target_username}")
+                log_admin_action(user_id, admin_name, "разбан пользователя", f"пользователь: {target_username} (ID: {target_id})")
             else:
                 bot.send_message(user_id, "❌ Ошибка при разбане пользователя.")
                 
@@ -774,7 +859,12 @@ if bot:
                     logs = get_admin_logs(None, 36500)  # 100 лет = все логи
                     
                     # Получаем username админа для поиска в логах
-                    admin_username = get_user_info(bot, target_id)
+                    admin_username = None
+                    try:
+                        admin_chat = bot.get_chat(target_id)
+                        admin_username = f"@{admin_chat.username}" if admin_chat.username else admin_chat.first_name
+                    except:
+                        pass
                     
                     # Фильтруем логи - удаляем те, где есть ID админа ИЛИ его username
                     filtered_logs = []
@@ -790,11 +880,11 @@ if bot:
                         for log in filtered_logs:
                             f.write(log + '\n')
                     
-                    bot.send_message(user_id, f"✅ Логи администратора {admin_username} очищены.")
+                    bot.send_message(user_id, f"✅ Логи администратора {target_id} очищены.")
                     
                     # Логируем действие
                     admin_name = f"{message.from_user.first_name} (@{message.from_user.username})" if message.from_user.username else message.from_user.first_name
-                    log_admin_action(user_id, admin_name, "очистка логов администратора", f"админ: {admin_username}")
+                    log_admin_action(user_id, admin_name, "очистка логов администратора", f"админ: {target_id}")
                     
                 except ValueError:
                     bot.send_message(user_id, "❌ Неверный user_id. Используй число или 'all'")
@@ -850,16 +940,14 @@ if bot:
             
             if not logs:
                 if target_admin_id:
-                    target_username = get_user_info(bot, target_admin_id)
-                    bot.send_message(user_id, f"📭 Логов для администратора {target_username} за последние {days} дней не найдено.")
+                    bot.send_message(user_id, f"📭 Логов для администратора {target_admin_id} за последние {days} дней не найдено.")
                 else:
                     bot.send_message(user_id, f"📭 Логов администраторов за последние {days} дней не найдено.")
                 return
 
             # Формируем текст логов
             if target_admin_id:
-                target_username = get_user_info(bot, target_admin_id)
-                log_text = f"📊 Логи администратора {target_username} за последние {days} дней:\n\n"
+                log_text = f"📊 Логи администратора {target_admin_id} за последние {days} дней:\n\n"
             else:
                 log_text = f"📊 Логи всех администраторов за последние {days} дней:\n\n"
 
@@ -905,10 +993,20 @@ if bot:
                                 
                                 # Пытаемся получить username админа
                                 admin_id = admin_info.split(' ')[0]
-                                admin_username = get_user_info(bot, int(admin_id))
+                                admin_username = "Неизвестно"
+                                try:
+                                    admin_chat = bot.get_chat(int(admin_id))
+                                    admin_username = f"@{admin_chat.username}" if admin_chat.username else admin_chat.first_name
+                                except:
+                                    admin_username = f"ID: {admin_id}"
                                 
                                 # Пытаемся получить username пользователя
-                                target_username = get_user_info(bot, int(user_part))
+                                target_username = "Неизвестно"
+                                try:
+                                    target_chat = bot.get_chat(int(user_part))
+                                    target_username = f"@{target_chat.username}" if target_chat.username else target_chat.first_name
+                                except:
+                                    target_username = f"ID: {user_part}"
                                 
                                 formatted_action = f"Администратор {admin_username} ответил пользователю {target_username}\nОтвет: {response_text}"
                         
@@ -922,8 +1020,7 @@ if bot:
                         elif "удаление администратора" in action_part:
                             if "удален админ:" in action_part:
                                 removed_admin_id = action_part.split("удален админ: ")[1]
-                                removed_username = get_user_info(bot, int(removed_admin_id))
-                                formatted_action = f"удаление администратора - удален админ: {removed_username}"
+                                formatted_action = f"удаление администратора - удален админ: {removed_admin_id}"
                         
                         # Форматируем рассылку сообщений
                         elif "рассылка сообщений" in action_part:
@@ -1038,9 +1135,14 @@ if bot:
             stats_text += "👥 Активность по администраторам:\n"
             for admin_id, count in sorted(admin_actions.items(), key=lambda x: x[1], reverse=True):
                 # Пытаемся получить имя админа
-                admin_username = get_user_info(bot, int(admin_id))
+                admin_name = "Неизвестно"
+                try:
+                    admin_chat = bot.get_chat(int(admin_id))
+                    admin_name = f"@{admin_chat.username}" if admin_chat.username else admin_chat.first_name
+                except:
+                    admin_name = f"ID: {admin_id}"
                 
-                stats_text += f"• {admin_username}: {count} действий\n"
+                stats_text += f"• {admin_name}: {count} действий\n"
             
             stats_text += "\n📋 Типы действий:\n"
             for action_type, count in sorted(action_types.items(), key=lambda x: x[1], reverse=True):
@@ -1093,12 +1195,11 @@ if bot:
                 first_name = "Unknown"
 
             if add_admin(target_id, username, first_name):
-                target_username = get_user_info(bot, target_id)
-                bot.send_message(user_id, f"✅ Пользователь {target_username} добавлен как администратор.")
+                bot.send_message(user_id, f"✅ Пользователь {first_name} (ID: {target_id}) добавлен как администратор.")
                 
                 # Логируем действие
                 admin_name = f"{message.from_user.first_name} (@{message.from_user.username})" if message.from_user.username else message.from_user.first_name
-                log_admin_action(user_id, admin_name, "добавление администратора", f"новый админ: {target_username}")
+                log_admin_action(user_id, admin_name, "добавление администратора", f"новый админ: {target_id} ({first_name})")
                 
                 # Уведомляем нового админа
                 try:
@@ -1144,12 +1245,11 @@ if bot:
                 return
 
             if remove_admin(target_id):
-                target_username = get_user_info(bot, target_id)
-                bot.send_message(ADMIN_ID, f"✅ Администратор {target_username} удален.")
+                bot.send_message(ADMIN_ID, f"✅ Администратор (ID: {target_id}) удален.")
                 
                 # Логируем действие
                 admin_name = f"{message.from_user.first_name} (@{message.from_user.username})" if message.from_user.username else message.from_user.first_name
-                log_admin_action(user_id, admin_name, "удаление администратора", f"удален админ: {target_username}")
+                log_admin_action(user_id, admin_name, "удаление администратора", f"удален админ: {target_id}")
                 
                 # Уведомляем бывшего админа
                 try:
@@ -1181,8 +1281,10 @@ if bot:
             for admin in admins:
                 admin_id, username, first_name, is_main_admin = admin
                 role = "👑 Главный" if is_main_admin else "🔹 Обычный"
-                admin_username = get_user_info(bot, admin_id)
-                admin_list += f"{role} админ: {admin_username} | ID: {admin_id}\n"
+                admin_list += f"{role} админ: {first_name or 'No name'}"
+                if username:
+                    admin_list += f" (@{username})"
+                admin_list += f" | ID: {admin_id}\n"
 
             bot.send_message(user_id, admin_list)
             
@@ -1251,8 +1353,16 @@ if bot:
             user_list = "👥 Список всех пользователей:\n\n"
             for user in users:
                 user_id, username, first_name, last_name = user
-                user_username = get_user_info(bot, user_id)
-                user_list += f"🆔 {user_username} | ID: {user_id}\n"
+                name = first_name or ""
+                if last_name:
+                    name += f" {last_name}"
+                if not name.strip():
+                    name = "No name"
+                
+                user_list += f"🆔 {user_id} | {name}"
+                if username:
+                    user_list += f" (@{username})"
+                user_list += "\n"
 
                 # Если сообщение становится слишком длинным, отправляем часть
                 if len(user_list) > 3000:
@@ -1357,8 +1467,9 @@ if bot:
             )
             
             # Отправляем уведомление админу
-            user_username = get_user_info(bot, user_id)
-            admin_text = f"📞 Пользователь {user_username} просит связаться."
+            admin_text = f"📞 Пользователь {message.from_user.first_name} "
+            admin_text += f"@{message.from_user.username or 'без username'} "
+            admin_text += f"(ID: {user_id}) просит связаться."
             
             # Отправляем всем админам
             admins = get_all_admins()
@@ -1394,8 +1505,7 @@ if bot:
                 return
 
             user_reply_mode[user_id] = target_id
-            target_username = get_user_info(bot, target_id)
-            bot.send_message(user_id, f"🔹 Режим ответа включен для пользователя {target_username}")
+            bot.send_message(user_id, f"🔹 Режим ответа включен для пользователя ID: {target_id}")
             
             # НЕ логируем включение режима ответа
             
@@ -1438,12 +1548,11 @@ if bot:
             try:
                 # Отправляем ответ пользователю
                 bot.send_message(target_user_id, f"💌 Поступил ответ от kvazador:\n\n{message.text}")
-                target_username = get_user_info(bot, target_user_id)
-                bot.send_message(user_id, f"✅ Ответ отправлен пользователю {target_username}")
+                bot.send_message(user_id, f"✅ Ответ отправлен пользователю ID: {target_user_id}")
                 
                 # Логируем отправку ответа с текстом
                 admin_name = f"{message.from_user.first_name} (@{message.from_user.username})" if message.from_user.username else message.from_user.first_name
-                log_admin_action(user_id, admin_name, f"отправка ответа пользователю - пользователь: {target_username} | ответ: {message.text}")
+                log_admin_action(user_id, admin_name, f"отправка ответа пользователю - пользователь: {target_user_id} | ответ: {message.text}")
                 
             except Exception as e:
                 logger.exception("Failed to send admin reply to %s: %s", target_user_id, e)
@@ -1488,8 +1597,12 @@ if bot:
                 bot.send_message(user_id, "ℹ️ Чтобы ответить пользователю, используй команду /reply user_id")
                 return
 
-            user_username = get_user_info(bot, user_id)
-            user_info = f"👤 От: {user_username}"
+            user_info = f"👤 От: {message.from_user.first_name}"
+            if message.from_user.last_name:
+                user_info += f" {message.from_user.last_name}"
+            if message.from_user.username:
+                user_info += f" (@{message.from_user.username})"
+            user_info += f"\n🆔 ID: {user_id}"
             user_info += f"\n⏰ {get_moscow_time()}"
 
             # Отправляем сообщение всем админам
@@ -1533,8 +1646,12 @@ if bot:
                     )
                     return
 
-            user_username = get_user_info(bot, user_id)
-            user_info = f"👤 От: {user_username}"
+            user_info = f"👤 От: {message.from_user.first_name}"
+            if message.from_user.last_name:
+                user_info += f" {message.from_user.last_name}"
+            if message.from_user.username:
+                user_info += f" (@{message.from_user.username})"
+            user_info += f"\n🆔 ID: {user_id}"
             user_info += f"\n⏰ {get_moscow_time()}"
 
             caption = f"{user_info}\n\n"
@@ -1593,8 +1710,10 @@ if bot:
                     )
                     return
 
-            user_username = get_user_info(bot, user_id)
-            user_info = f"👤 От: {user_username}"
+            user_info = f"👤 От: {message.from_user.first_name}"
+            if message.from_user.username:
+                user_info += f" (@{message.from_user.username})"
+            user_info += f"\n🆔 ID: {user_id}"
             user_info += f"\n⏰ {get_moscow_time()}"
 
             # Отправляем всем админам
