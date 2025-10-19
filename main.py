@@ -62,7 +62,7 @@ def format_admin_name(user):
 
 def format_target_info(user_id, username=None, first_name=None):
     """Форматирует информацию о цели для логов"""
-    #  ЧИСТКА ДУБЛЕЙ "@"
+    #  4ИСТКА ДУБЛЕЙ "@"
     if username and "@" in username:
         username = username.replace("@@", "@").lstrip("@")
         username = f"@{username}" if username else "Неизвестно"
@@ -75,7 +75,7 @@ def format_target_info(user_id, username=None, first_name=None):
         return f"ID: {user_id}"
 
 def log_admin_action(admin_user, action, target_info="", additional_info=""):
-"""Логирует действия администраторов в новом формате"""
+    """Логирует действия администраторов в новом формате"""
     try:
         admin_name = format_admin_name(admin_user)
         
