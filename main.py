@@ -62,17 +62,27 @@ def format_admin_name(user):
 
 def format_target_info(user_id, username=None, first_name=None):
     """Форматирует информацию о цели для логов"""
+    #  ЧИСТКА ДУБЛЕЙ "@"
+    if username and "@" in username:
+        username = username.replace("@@", "@").lstrip("@")
+        username = f"@{username}" if username else "Неизвестно"
+    
     if username:
-        return f"@{username} ({user_id})"
+        return f"{username} ({user_id})"
     elif first_name:
         return f"{first_name} ({user_id})"
     else:
         return f"ID: {user_id}"
 
 def log_admin_action(admin_user, action, target_info="", additional_info=""):
-    """Логирует действия администраторов в новом формате"""
+"""Логирует действия администраторов в новом формате"""
     try:
         admin_name = format_admin_name(admin_user)
+        
+        # ЧИСТИМ ДУБЛИ В target_info
+        if target_info and "@@" in target_info:
+            target_info = target_info.replace("@@", "@")
+        
         log_message = f"{admin_name} {action}"
         
         if target_info:
@@ -81,7 +91,6 @@ def log_admin_action(admin_user, action, target_info="", additional_info=""):
         if additional_info:
             log_message += f" {additional_info}"
         
-        # Записываем в оба места для надежности
         logger.info(f"ADMIN_ACTION: {log_message}")
         admin_logger.info(log_message)
         
