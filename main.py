@@ -280,6 +280,10 @@ def extract_ban_info(action, ban_type):
         elif "reason:" in action:
             reason_part = action.split("reason:")[1].strip()
         
+        # ЧИСТИМ ДУБЛИ "@"
+        if user_part and "@@" in user_part:
+            user_part = user_part.replace("@@", "@")
+        
         result = f"{ban_type} {user_part}"
         if time_part:
             result += f" [{time_part}]"
@@ -297,9 +301,15 @@ def extract_simple_action(action, action_type):
     try:
         if "пользователь:" in action:
             user_part = action.split("пользователь:")[1].strip()
+            # ЧИСТИМ ДУБЛИ "@"
+            if "@@" in user_part:
+                user_part = user_part.replace("@@", "@")
             return f"{action_type} {user_part}"
         elif "user:" in action:
             user_part = action.split("user:")[1].strip()
+            # ЧИСТИМ ДУБЛИ "@"
+            if "@@" in user_part:
+                user_part = user_part.replace("@@", "@")
             return f"{action_type} {user_part}"
         else:
             return action_type
@@ -313,6 +323,9 @@ def extract_reply_info(action):
         if "пользователь:" in action and "ответ:" in action:
             user_part = action.split("пользователь:")[1].split("|")[0].strip()
             reply_part = action.split("ответ:")[1].strip()
+            # ЧИСТИМ ДУБЛИ "@"
+            if "@@" in user_part:
+                user_part = user_part.replace("@@", "@")
             return f"reply {user_part} [{reply_part}]"
         else:
             return "reply [unknown]"
@@ -325,12 +338,21 @@ def extract_admin_management(action, action_type):
     try:
         if "админ:" in action:
             admin_part = action.split("админ:")[1].strip()
+            # ЧИСТИМ ДУБЛИ "@"
+            if "@@" in admin_part:
+                admin_part = admin_part.replace("@@", "@")
             return f"{action_type} {admin_part}"
         elif "new admin:" in action:
             admin_part = action.split("new admin:")[1].strip()
+            # ЧИСТИМ ДУБЛИ "@"
+            if "@@" in admin_part:
+                admin_part = admin_part.replace("@@", "@")
             return f"{action_type} {admin_part}"
         elif "удален админ:" in action:
             admin_part = action.split("удален админ:")[1].strip()
+            # ЧИСТИМ ДУБЛИ "@"
+            if "@@" in admin_part:
+                admin_part = admin_part.replace("@@", "@")
             return f"{action_type} {admin_part}"
         else:
             return action_type
@@ -435,59 +457,6 @@ def get_admin_logs(admin_id=None, days=30):
         
     except Exception as e:
         logger.exception("Failed to read admin logs: %s", e)
-        return []
-
-def get_bot_logs(days=30):
-    """Возвращает общие логи бота за указанный период"""
-    try:
-        if not os.path.exists(LOGFILE):
-            logger.warning(f"Bot log file not found: {LOGFILE}")
-            return []
-        
-        # Используем UTC время для сравнения
-        cutoff_date = (datetime.datetime.utcnow() - datetime.timedelta(days=days))
-        
-        with open(LOGFILE, 'r', encoding='utf-8') as f:
-            lines = f.readlines()
-        
-        logs = []
-        for line in lines:
-            try:
-                if not line.strip():
-                    continue
-                    
-                # Парсим строку лога
-                if ' - ' in line:
-                    parts = line.strip().split(' - ', 1)
-                    if len(parts) >= 2:
-                        timestamp_str = parts[0].strip()
-                        log_content = parts[1].strip()
-                        
-                        # Убираем миллисекунды если есть
-                        if ',' in timestamp_str:
-                            timestamp_str = timestamp_str.split(',')[0]
-                        
-                        # Парсим время из лога
-                        try:
-                            log_time = datetime.datetime.strptime(timestamp_str, '%Y-%m-%d %H:%M:%S')
-                            
-                            # Сравниваем время
-                            if log_time >= cutoff_date:
-                                logs.append(line.strip())
-                        except ValueError as e:
-                            logger.warning(f"Failed to parse timestamp '{timestamp_str}': {e}")
-                            # Все равно добавляем лог если не можем распарсить время
-                            logs.append(line.strip())
-                
-            except Exception as e:
-                logger.error(f"Error parsing bot log line: {line} - {e}")
-                continue
-        
-        logger.info(f"Found {len(logs)} bot logs for period {days} days")
-        return logs
-        
-    except Exception as e:
-        logger.exception("Failed to read bot logs: %s", e)
         return []
 
 # ----------------------------
@@ -936,7 +905,6 @@ if bot:
                     help_text += "/removeadmin - Удалить админа\n"
                     help_text += "/admins - Список админов\n"
                     help_text += "/adminlogs - Логи админов\n"
-                    help_text += "/botlogs - Логи бота\n"
                     help_text += "/clearlogs - Очистить логи\n"
                     help_text += "/logstats - Статистика логов\n\n"
             
@@ -1241,57 +1209,6 @@ if bot:
             
         except Exception:
             logger.exception("Error in /adminlogs handler: %s", message)
-
-    @bot.message_handler(commands=['botlogs'])
-    def show_bot_logs(message):
-        """Показывает общие логи бота (только для главного админа)"""
-        logger.info(f"🎯 /botlogs handler triggered by {message.from_user.id}")
-        try:
-            user_id = int(message.from_user.id)
-            
-            if not is_main_admin(user_id):
-                bot.send_message(user_id, "❌ Эта команда только для главного администратора.")
-                return
-
-            parts = message.text.split()
-            days = 7  # По умолчанию 7 дней для бот логов
-            
-            if len(parts) >= 2:
-                try:
-                    days = int(parts[1])
-                    if days <= 0 or days > 30:
-                        bot.send_message(user_id, "❌ Количество дней должно быть от 1 до 30")
-                        return
-                except ValueError:
-                    bot.send_message(user_id, "❌ Количество дней должно быть числом")
-                    return
-
-            bot.send_message(user_id, f"🔄 Получаю логи бота за последние {days} дней...")
-
-            logs = get_bot_logs(days)
-            
-            if not logs:
-                bot.send_message(user_id, f"📭 Логов бота за последние {days} дней не найдено.")
-                return
-
-            formatted_logs = format_admin_logs_for_display(logs, days)
-            
-            # Разбиваем на части если слишком длинное сообщение
-            if len(formatted_logs) > 4000:
-                parts = [formatted_logs[i:i+4000] for i in range(0, len(formatted_logs), 4000)]
-                for part in parts:
-                    bot.send_message(user_id, part)
-                    time.sleep(0.5)
-            else:
-                bot.send_message(user_id, formatted_logs)
-
-            bot.send_message(user_id, f"📈 Всего записей: {len(logs)}")
-
-            # Логируем просмотр логов бота
-            log_admin_action(message.from_user, "botlogs", f"[{days} дней]")
-            
-        except Exception:
-            logger.exception("Error in /botlogs handler: %s", message)
 
     @bot.message_handler(commands=['clearlogs'])
     def clear_logs_command(message):
@@ -1934,7 +1851,7 @@ if bot:
             known_commands = [
                 '/start', '/help', '/ban', '/spermban', '/unban', '/obossat',
                 '/addadmin', '/removeadmin', '/admins', '/stats', '/getusers',
-                '/sendall', '/reply', '/stop', '/adminlogs', '/botlogs', '/clearlogs', '/logstats',
+                '/sendall', '/reply', '/stop', '/adminlogs', '/clearlogs', '/logstats',
                 '/debug', '/myrights'
             ]
             
