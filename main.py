@@ -1609,8 +1609,8 @@ if bot:
                 
         except Exception:
             logger.exception("Error in /getusers handler: %s", message)
-        @bot.message_handler(commands=['sendall'])
-        
+    
+    @bot.message_handler(commands=['sendall'])
     def send_all_command(message):
         """Рассылка сообщения всем пользователям (для всех админов)"""
         logger.info(f"🎯 /sendall handler triggered by {message.from_user.id}")
