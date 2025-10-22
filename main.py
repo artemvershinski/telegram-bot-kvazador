@@ -1564,47 +1564,51 @@ if bot:
 
     @bot.message_handler(commands=['getusers'])
     def get_users_command(message):
-        """Показывает список всех пользователей (для всех админов)"""
-        logger.info(f"🎯 /getusers handler triggered by {message.from_user.id}")
-        try:
-            user_id = int(message.from_user.id)
+    """Показывает список всех пользователей (для всех админов)"""
+    logger.info(f"🎯 /getusers handler triggered by {message.from_user.id}")
+    try:
+        admin_id = int(message.from_user.id)  # 👈 Меняем название переменной
+        
+        if not is_admin(admin_id):
+            bot.send_message(admin_id, "❌ Эта команда только для администраторов.")
+            return
+
+        users = get_all_users()
+        if not users:
+            bot.send_message(admin_id, "📝 База пользователей пуста.")
+            return
+
+        user_list = "Список всех пользователей:\n\n"
+        
+        for user in users:
+            user_id, username, first_name, last_name = user
+            name = first_name or ""
+            if last_name:
+                name += f" {last_name}"
+            if not name.strip():
+                name = "No name"
             
-            if not is_admin(user_id):
-                bot.send_message(user_id, "❌ Эта команда только для администраторов.")
-                return
+            user_entry = f"🆔 {user_id} | {name}"
+            if username:
+                user_entry += f" (@{username})"
+            user_entry += "\n"
 
-            users = get_all_users()
-            if not users:
-                bot.send_message(user_id, "📝 База пользователей пуста.")
-                return
+            # Если текущий список слишком длинный, отправляем его
+            if len(user_list) + len(user_entry) > 4000:
+                bot.send_message(admin_id, user_list)  # 👈 Отправляем админу
+                user_list = "Список продолжение:\n\n"  # 👈 Начинаем новую часть
+            
+            user_list += user_entry
 
-            user_list = "Список всех пользователей:\n\n"
-            for user in users:
-                user_id, username, first_name, last_name = user
-                name = first_name or ""
-                if last_name:
-                    name += f" {last_name}"
-                if not name.strip():
-                    name = "No name"
-                
-                user_list += f"🆔 {user_id} | {name}"
-                if username:
-                    user_list += f" (@{username})"
-                user_list += "\n"
-
-                if len(user_list) > 3000:
-                    bot.send_message(user_id, user_list)
-                    user_list = ""
-
-            if user_list:
-                bot.send_message(user_id, user_list)
-                
-            # Логируем просмотр списка пользователей
-            log_admin_action(message.from_user, "getusers")
-                
-        except Exception:
-            logger.exception("Error in /getusers handler: %s", message)
-
+        # Отправляем оставшуюся часть
+        if user_list:
+            bot.send_message(admin_id, user_list)  # 👈 Отправляем админу
+            
+        # Логируем просмотр списка пользователей
+        log_admin_action(message.from_user, "getusers")
+            
+    except Exception:
+        logger.exception("Error in /getusers handler: %s", message)
     @bot.message_handler(commands=['sendall'])
     def send_all_command(message):
         """Рассылка сообщения всем пользователям (для всех админов)"""
