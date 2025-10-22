@@ -10,6 +10,7 @@ from threading import Thread
 import requests
 import json
 from collections import defaultdict
+import random
 
 from flask import Flask
 import telebot
@@ -573,6 +574,12 @@ def init_db():
                       banned_by INTEGER,
                       unban_request_date TIMESTAMP)''')
         
+        # Создаем таблицы для бурмалды
+        c.execute('''CREATE TABLE IF NOT EXISTS user_balance
+                     (user_id INTEGER PRIMARY KEY, balance INTEGER DEFAULT 0)''')
+        c.execute('''CREATE TABLE IF NOT EXISTS promocodes
+                     (promocode TEXT PRIMARY KEY, value INTEGER, used BOOLEAN DEFAULT FALSE, used_by INTEGER)''')
+        
         # Добавляем главного админа если его нет
         c.execute("INSERT OR IGNORE INTO admins (user_id, username, first_name, is_main_admin) VALUES (?, ?, ?, ?)",
                   (ADMIN_ID, "kvazador", "kvazador", True))
@@ -604,6 +611,8 @@ def register_user(user_id, username, first_name, last_name):
         c = conn.cursor()
         c.execute("INSERT OR REPLACE INTO users (user_id, username, first_name, last_name) VALUES (?, ?, ?, ?)",
                   (user_id, username, first_name, last_name))
+        # Создаем запись баланса если её нет
+        c.execute("INSERT OR IGNORE INTO user_balance (user_id, balance) VALUES (?, ?)", (user_id, 0))
         conn.commit()
         conn.close()
         logger.debug("Registered user %s (%s)", user_id, username)
@@ -830,6 +839,109 @@ def update_unban_request_date(user_id):
         logger.exception("Failed to update unban request date for %s: %s", user_id, e)
         return False
 
+# ==================== СИСТЕМА БУРМАЛДЫ И ПРОМОКОДОВ ====================
+
+def get_user_balance(user_id):
+    """Возвращает баланс пользователя"""
+    try:
+        conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+        c = conn.cursor()
+        c.execute("SELECT balance FROM user_balance WHERE user_id = ?", (user_id,))
+        result = c.fetchone()
+        conn.close()
+        return result[0] if result else 0
+    except Exception as e:
+        logger.exception("Failed to get user balance for %s: %s", user_id, e)
+        return 0
+
+def update_user_balance(user_id, new_balance):
+    """Обновляет баланс пользователя"""
+    try:
+        conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+        c = conn.cursor()
+        c.execute("UPDATE user_balance SET balance = ? WHERE user_id = ?", (new_balance, user_id))
+        conn.commit()
+        conn.close()
+        return True
+    except Exception as e:
+        logger.exception("Failed to update user balance for %s: %s", user_id, e)
+        return False
+
+def add_promocode(promocode, value):
+    """Добавляет промокод"""
+    try:
+        conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+        c = conn.cursor()
+        c.execute("INSERT OR REPLACE INTO promocodes (promocode, value) VALUES (?, ?)", (promocode, value))
+        conn.commit()
+        conn.close()
+        logger.info("Added promocode: %s with value: %s", promocode, value)
+        return True
+    except Exception as e:
+        logger.exception("Failed to add promocode %s: %s", promocode, e)
+        return False
+
+def use_promocode(promocode, user_id):
+    """Активирует промокод для пользователя"""
+    try:
+        conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+        c = conn.cursor()
+        
+        # Проверяем существует ли промокод и не использован ли он
+        c.execute("SELECT value, used FROM promocodes WHERE promocode = ?", (promocode,))
+        result = c.fetchone()
+        
+        if not result:
+            return None, "Промокод не найден"
+        
+        value, used = result
+        if used:
+            return None, "Промокод уже использован"
+        
+        # Активируем промокод
+        c.execute("UPDATE promocodes SET used = TRUE, used_by = ? WHERE promocode = ?", (user_id, promocode))
+        
+        # Обновляем баланс пользователя
+        current_balance = get_user_balance(user_id)
+        new_balance = current_balance + value
+        update_user_balance(user_id, new_balance)
+        
+        conn.commit()
+        conn.close()
+        
+        logger.info("User %s used promocode %s, got %s coins", user_id, promocode, value)
+        return value, f"Промокод активирован! Вы получили {value} монет."
+        
+    except Exception as e:
+        logger.exception("Failed to use promocode %s for user %s: %s", promocode, user_id, e)
+        return None, "Ошибка при активации промокода"
+
+def get_promocode_stats():
+    """Возвращает статистику по промокодам"""
+    try:
+        conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+        c = conn.cursor()
+        
+        c.execute("SELECT COUNT(*) FROM promocodes")
+        total = c.fetchone()[0]
+        
+        c.execute("SELECT COUNT(*) FROM promocodes WHERE used = TRUE")
+        used = c.fetchone()[0]
+        
+        c.execute("SELECT COUNT(*) FROM promocodes WHERE used = FALSE")
+        available = c.fetchone()[0]
+        
+        conn.close()
+        
+        return {
+            'total': total,
+            'used': used,
+            'available': available
+        }
+    except Exception as e:
+        logger.exception("Failed to get promocode stats: %s", e)
+        return {'total': 0, 'used': 0, 'available': 0}
+
 user_reply_mode = {}
 user_unban_mode = {}
 
@@ -857,15 +969,27 @@ if bot:
                           message.from_user.last_name)
 
             welcome_text = (
-                "Привет. Я бот-пересыльщик сообщений для kvazador.\n\n"
-                "Для связи с kvazador сначала вам необходимо отправить сообщение (сколько потребуется) здесь. "
-                "Ответ может поступить через данного бота, либо вам в ЛС.\n\n"
-                "Ваше сообщение будет доставлено ему от вашего имени.\n\n"
-                "Сам kvazador свяжется с вами как только заметит ваше сообщение в боте. "
+                "🎰 Добро пожаловать в Бурмалду! 🎰\n\n"
+                "Это бот-пересыльщик сообщений для kvazador с элементами казино!\n\n"
+                "💎 **Виртуальная бурмалда (казино):**\n"
+                "• Ваш текущий баланс: 0 монет\n"
+                "• Пополнить баланс можно через промокоды\n"
+                "• Для запроса промокода используйте /get_promo\n"
+                "• Для запуска казино используйте /casino\n\n"
+                "📨 **Связь с kvazador:**\n"
+                "Для связи сначала отправьте сообщение здесь. "
+                "Ответ может поступить через бота или в ЛС.\n\n"
+                "🎁 **Промокоды:**\n"
+                "• Запросите промокод через /get_promo\n"
+                "• Активируйте его через /promo ПРОМОКОД\n"
+                "• Каждый промокод можно использовать только 1 раз!\n\n"
+                "Ваше сообщение будет доставлено kvazador от вашего имени."
             )
 
             markup = ReplyKeyboardMarkup(resize_keyboard=True)
             markup.add(KeyboardButton("📞 Попросить связаться со мной."))
+            markup.add(KeyboardButton("🎰 Запустить бурмалду"))
+            markup.add(KeyboardButton("🎁 Запросить промокод"))
             bot.send_message(user_id, welcome_text, reply_markup=markup)
             
             # Логируем старт пользователя
@@ -882,23 +1006,29 @@ if bot:
             is_user_admin = is_admin(user_id)
             ban_info = is_banned(user_id)
             
-            help_text = "Доступные команды:\n\n"
+            help_text = "🎰 Доступные команды Бурмалды:\n\n"
             
-            help_text += "Основные:\n"
+            help_text += "🎮 Основные команды:\n"
             help_text += "/start - Начать работу с ботом\n"
-            help_text += "/help - Показать это сообщение\n\n"
+            help_text += "/help - Показать это сообщение\n"
+            help_text += "/casino - Запустить бурмалду (казино)\n"
+            help_text += "/balance - Показать баланс\n\n"
+            
+            help_text += "🎁 Промокоды:\n"
+            help_text += "/get_promo - Запросить промокод у модерации\n"
+            help_text += "/promo ПРОМОКОД - Активировать промокод\n\n"
             
             if ban_info and ban_info['type'] == 'permanent':
                 help_text += "Для забаненных:\n"
                 help_text += "/unban - Запросить разбан\n\n"
             
             if not ban_info:
-                help_text += "Общение:\n"
+                help_text += "📨 Общение:\n"
                 help_text += "Просто напиши сообщение - оно дойдет до kvazador\n"
                 help_text += "Кнопка '📞 Попросить связаться' - для срочных вопросов\n\n"
             
             if is_user_admin:
-                help_text += "Администратор:\n"
+                help_text += "⚡ Администратор:\n"
                 help_text += "/stats - Статистика бота\n"
                 help_text += "/getusers - Список пользователей\n"
                 help_text += "/sendall - Рассылка сообщений\n"
@@ -909,20 +1039,409 @@ if bot:
                 help_text += "/stop - Закончить ответ\n\n"
                 
                 if is_main_admin(user_id):
-                    help_text += "Главный администратор:\n"
+                    help_text += "👑 Главный администратор:\n"
                     help_text += "/addadmin - Добавить админа\n"
                     help_text += "/removeadmin - Удалить админа\n"
                     help_text += "/admins - Список админов\n"
                     help_text += "/adminlogs - Логи админов\n"
                     help_text += "/clearlogs - Очистить логи\n"
-                    help_text += "/logstats - Статистика логов\n\n"
+                    help_text += "/logstats - Статистика логов\n"
+                    help_text += "/add_promo - Создать промокод\n"
+                    help_text += "/promo_stats - Статистика промокодов\n\n"
             
-            help_text += "Просто напиши сообщение чтобы связаться с kvazador!"
+            help_text += "🎰 Удачи в бурмалде!"
             
             bot.send_message(user_id, help_text)
             
         except Exception:
             logger.exception("Error in /help handler: %s", message)
+
+    # ==================== КОМАНДЫ БУРМАЛДЫ ====================
+
+    @bot.message_handler(commands=['casino'])
+    def casino_command(message):
+        """Запускает бурмалду (казино)"""
+        try:
+            user_id = int(message.from_user.id)
+            
+            ban_info = is_banned(user_id)
+            if ban_info:
+                if ban_info['type'] == 'permanent':
+                    bot.send_message(user_id, "🚫 Вы забанены навсегда и не можете играть в бурмалду.")
+                else:
+                    time_left = format_time_left(ban_info['time_left'])
+                    bot.send_message(user_id, f"🚫 Вы забанены и не можете играть в бурмалду. До разбана осталось: {time_left}")
+                return
+
+            balance = get_user_balance(user_id)
+            
+            if balance < 10:
+                bot.send_message(
+                    user_id, 
+                    f"💸 Недостаточно монет для игры!\n\n"
+                    f"Ваш баланс: {balance} монет\n"
+                    f"Минимальная ставка: 10 монет\n\n"
+                    f"🎁 Запросите промокод через /get_promo чтобы пополнить баланс!"
+                )
+                return
+
+            # Создаем клавиатуру для ставок
+            markup = ReplyKeyboardMarkup(resize_keyboard=True)
+            markup.add(KeyboardButton("🎰 Сыграть (10 монет)"))
+            markup.add(KeyboardButton("💰 Мой баланс"))
+            markup.add(KeyboardButton("🎁 Запросить промокод"))
+            markup.add(KeyboardButton("⬅️ Назад"))
+            
+            bot.send_message(
+                user_id,
+                f"🎰 **Добро пожаловать в Бурмалду!** 🎰\n\n"
+                f"💰 Ваш баланс: **{balance}** монет\n"
+                f"🎯 Минимальная ставка: **10** монет\n\n"
+                f"🎮 **Правила:**\n"
+                f"• Ставка: 10 монет\n"
+                f"• Шанс выигрыша: 45%\n"
+                f"• Выигрыш: 20 монет (x2)\n"
+                f"• Джекпот: 100 монет (1% шанс)\n\n"
+                f"🎲 Нажмите 'Сыграть' чтобы испытать удачу!",
+                reply_markup=markup
+            )
+            
+        except Exception:
+            logger.exception("Error in /casino handler: %s", message)
+
+    @bot.message_handler(commands=['balance'])
+    def balance_command(message):
+        """Показывает баланс пользователя"""
+        try:
+            user_id = int(message.from_user.id)
+            balance = get_user_balance(user_id)
+            
+            bot.send_message(
+                user_id,
+                f"💰 **Ваш баланс:** {balance} монет\n\n"
+                f"🎁 Чтобы пополнить баланс:\n"
+                f"• Запросите промокод через /get_promo\n"
+                f"• Активируйте его через /promo ПРОМОКОД\n\n"
+                f"🎰 Для игры в бурмалду: /casino"
+            )
+            
+        except Exception:
+            logger.exception("Error in /balance handler: %s", message)
+
+    @bot.message_handler(commands=['get_promo'])
+    def get_promo_command(message):
+        """Запрос промокода у модерации"""
+        try:
+            user_id = int(message.from_user.id)
+            
+            ban_info = is_banned(user_id)
+            if ban_info:
+                if ban_info['type'] == 'permanent':
+                    bot.send_message(user_id, "🚫 Вы забанены навсегда и не можете запрашивать промокоды.")
+                else:
+                    time_left = format_time_left(ban_info['time_left'])
+                    bot.send_message(user_id, f"🚫 Вы забанены и не можете запрашивать промокоды. До разбана осталось: {time_left}")
+                return
+
+            # Отправляем сообщение админам
+            admin_text = f"🎁 ЗАПРОС ПРОМОКОДА\n\n"
+            admin_text += f"👤 Пользователь: {message.from_user.first_name}"
+            if message.from_user.last_name:
+                admin_text += f" {message.from_user.last_name}"
+            if message.from_user.username:
+                admin_text += f" (@{message.from_user.username})"
+            admin_text += f"\n🆔 ID: {user_id}"
+            admin_text += f"\n⏰ {get_current_time()}"
+            admin_text += f"\n\n💎 Текущий баланс: {get_user_balance(user_id)} монет"
+            admin_text += f"\n\n✍️ Отправьте промокод через: /reply {user_id}"
+
+            admins = get_all_admins()
+            for admin in admins:
+                try:
+                    bot.send_message(admin[0], admin_text)
+                except Exception as e:
+                    logger.error(f"Failed to send promo request to admin {admin[0]}: {e}")
+
+            bot.send_message(
+                user_id,
+                "🎁 **Запрос промокода отправлен модерации!**\n\n"
+                "📝 Ожидайте ответа в ЛС от модератора.\n\n"
+                "💡 **Как активировать промокод:**\n"
+                "Когда получите промокод, активируйте его командой:\n"
+                "**/promo ВАШ_ПРОМОКОД**\n\n"
+                "⚠️ Каждый промокод можно использовать только **1 раз**!"
+            )
+            
+            # Логируем запрос промокода
+            log_user_action(message.from_user, "promo_request")
+            
+        except Exception:
+            logger.exception("Error in /get_promo handler: %s", message)
+
+    @bot.message_handler(commands=['promo'])
+    def activate_promo_command(message):
+        """Активация промокода"""
+        try:
+            user_id = int(message.from_user.id)
+            
+            ban_info = is_banned(user_id)
+            if ban_info:
+                if ban_info['type'] == 'permanent':
+                    bot.send_message(user_id, "🚫 Вы забанены навсегда и не можете активировать промокоды.")
+                else:
+                    time_left = format_time_left(ban_info['time_left'])
+                    bot.send_message(user_id, f"🚫 Вы забанены и не можете активировать промокоды. До разбана осталось: {time_left}")
+                return
+
+            parts = message.text.split()
+            if len(parts) < 2:
+                bot.send_message(
+                    user_id,
+                    "❌ **Неверный формат команды!**\n\n"
+                    "📝 Используйте:\n"
+                    "**/promo ВАШ_ПРОМОКОД**\n\n"
+                    "💡 Пример:\n"
+                    "/promо SUPER2024\n"
+                    "/promо FREECOINS"
+                )
+                return
+
+            promocode = parts[1].upper()
+            value, result_message = use_promocode(promocode, user_id)
+            
+            if value is not None:
+                # Успешная активация
+                new_balance = get_user_balance(user_id)
+                
+                # Отправляем уведомление админам
+                admin_text = f"✅ ПРОМОКОД АКТИВИРОВАН\n\n"
+                admin_text += f"👤 Пользователь: {message.from_user.first_name}"
+                if message.from_user.username:
+                    admin_text += f" (@{message.from_user.username})"
+                admin_text += f"\n🆔 ID: {user_id}"
+                admin_text += f"\n🎁 Промокод: {promocode}"
+                admin_text += f"\n💰 Сумма: {value} монет"
+                admin_text += f"\n💎 Новый баланс: {new_balance} монет"
+                admin_text += f"\n⏰ {get_current_time()}"
+
+                admins = get_all_admins()
+                for admin in admins:
+                    try:
+                        bot.send_message(admin[0], admin_text)
+                    except Exception as e:
+                        logger.error(f"Failed to notify admin about promo activation: {e}")
+
+                bot.send_message(
+                    user_id,
+                    f"🎉 **{result_message}**\n\n"
+                    f"💰 Ваш новый баланс: **{new_balance}** монет\n\n"
+                    f"🎰 Хотите испытать удачу? Запустите бурмалду: /casino"
+                )
+                
+                # Логируем активацию промокода
+                log_user_action(message.from_user, "promo_activate", f"[{promocode} -> {value} coins]")
+                
+            else:
+                # Ошибка активации
+                bot.send_message(
+                    user_id,
+                    f"❌ **{result_message}**\n\n"
+                    f"💡 Проверьте правильность промокода и убедитесь, что он не был использован ранее."
+                )
+            
+        except Exception:
+            logger.exception("Error in /promo handler: %s", message)
+
+    # ==================== АДМИН КОМАНДЫ ДЛЯ ПРОМОКОДОВ ====================
+
+    @bot.message_handler(commands=['add_promo'])
+    def add_promo_command(message):
+        """Создание промокода (только для главного админа)"""
+        logger.info(f"🎯 /add_promo handler triggered by {message.from_user.id}")
+        try:
+            user_id = int(message.from_user.id)
+            
+            if not is_main_admin(user_id):
+                bot.send_message(user_id, "❌ Эта команда только для главного администратора.")
+                return
+
+            parts = message.text.split()
+            if len(parts) < 3:
+                bot.send_message(
+                    user_id,
+                    "❌ **Используйте:** /add_promo ПРОМОКОД СУММА\n\n"
+                    "💡 Примеры:\n"
+                    "/add_promo SUPER100 100\n"
+                    "/add_promo WELCOME50 50\n"
+                    "/add_promo BONUS200 200"
+                )
+                return
+
+            promocode = parts[1].upper()
+            try:
+                value = int(parts[2])
+                if value <= 0:
+                    bot.send_message(user_id, "❌ Сумма должна быть положительным числом.")
+                    return
+            except ValueError:
+                bot.send_message(user_id, "❌ Сумма должна быть числом.")
+                return
+
+            if add_promocode(promocode, value):
+                bot.send_message(
+                    user_id,
+                    f"✅ **Промокод создан!**\n\n"
+                    f"🎁 Промокод: **{promocode}**\n"
+                    f"💰 Сумма: **{value}** монет\n"
+                    f"👥 Использований: **1 раз**\n\n"
+                    f"💡 Отправьте его пользователю через /reply USER_ID"
+                )
+                
+                # Логируем создание промокода
+                log_admin_action(message.from_user, "add_promo", f"[{promocode} -> {value} coins]")
+                
+            else:
+                bot.send_message(user_id, "❌ Ошибка при создании промокода.")
+                
+        except Exception:
+            logger.exception("Error in /add_promo handler: %s", message)
+
+    @bot.message_handler(commands=['promo_stats'])
+    def promo_stats_command(message):
+        """Статистика промокодов (только для главного админа)"""
+        logger.info(f"🎯 /promo_stats handler triggered by {message.from_user.id}")
+        try:
+            user_id = int(message.from_user.id)
+            
+            if not is_main_admin(user_id):
+                bot.send_message(user_id, "❌ Эта команда только для главного администратора.")
+                return
+
+            stats = get_promocode_stats()
+            
+            # Получаем список использованных промокодов
+            try:
+                conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+                c = conn.cursor()
+                c.execute("SELECT promocode, value, used_by FROM promocodes WHERE used = TRUE")
+                used_promos = c.fetchall()
+                conn.close()
+            except Exception as e:
+                logger.error(f"Failed to get used promocodes: {e}")
+                used_promos = []
+
+            stats_text = f"📊 **Статистика промокодов:**\n\n"
+            stats_text += f"📈 Всего промокодов: {stats['total']}\n"
+            stats_text += f"✅ Использовано: {stats['used']}\n"
+            stats_text += f"🆓 Доступно: {stats['available']}\n\n"
+
+            if used_promos:
+                stats_text += "🎁 **Использованные промокоды:**\n"
+                for promo in used_promos[:10]:  # Показываем первые 10
+                    promocode, value, used_by = promo
+                    stats_text += f"• {promocode} - {value} монет (ID: {used_by})\n"
+                
+                if len(used_promos) > 10:
+                    stats_text += f"\n... и еще {len(used_promos) - 10} промокодов"
+
+            bot.send_message(user_id, stats_text)
+            
+            # Логируем просмотр статистики промокодов
+            log_admin_action(message.from_user, "promo_stats")
+            
+        except Exception:
+            logger.exception("Error in /promo_stats handler: %s", message)
+
+    # ==================== ОБРАБОТЧИКИ КНОПОК БУРМАЛДЫ ====================
+
+    @bot.message_handler(func=lambda message: message.text == "🎰 Запустить бурмалду")
+    def handle_casino_button(message):
+        casino_command(message)
+
+    @bot.message_handler(func=lambda message: message.text == "🎁 Запросить промокод")
+    def handle_promo_button(message):
+        get_promo_command(message)
+
+    @bot.message_handler(func=lambda message: message.text == "💰 Мой баланс")
+    def handle_balance_button(message):
+        balance_command(message)
+
+    @bot.message_handler(func=lambda message: message.text == "⬅️ Назад")
+    def handle_back_button(message):
+        try:
+            user_id = int(message.from_user.id)
+            
+            markup = ReplyKeyboardMarkup(resize_keyboard=True)
+            markup.add(KeyboardButton("📞 Попросить связаться со мной."))
+            markup.add(KeyboardButton("🎰 Запустить бурмалду"))
+            markup.add(KeyboardButton("🎁 Запросить промокод"))
+            
+            bot.send_message(
+                user_id,
+                "🔙 Возвращаемся в главное меню...",
+                reply_markup=markup
+            )
+            
+        except Exception:
+            logger.exception("Error in back button handler: %s", message)
+
+    @bot.message_handler(func=lambda message: message.text == "🎰 Сыграть (10 монет)")
+    def handle_play_button(message):
+        """Обработчик игры в бурмалду"""
+        try:
+            user_id = int(message.from_user.id)
+            
+            balance = get_user_balance(user_id)
+            
+            if balance < 10:
+                bot.send_message(
+                    user_id, 
+                    f"💸 Недостаточно монет для игры!\n\n"
+                    f"Ваш баланс: {balance} монет\n"
+                    f"Минимальная ставка: 10 монет\n\n"
+                    f"🎁 Запросите промокод через /get_promo чтобы пополнить баланс!"
+                )
+                return
+
+            # Снимаем ставку
+            new_balance = balance - 10
+            update_user_balance(user_id, new_balance)
+            
+            # Генерируем результат
+            result = random.random()
+            
+            if result < 0.01:  # 1% шанс на джекпот
+                win_amount = 100
+                result_text = "🎉 **ДЖЕКПОТ!** 🎉\nВы выиграли 100 монет!"
+                result_emoji = "💰"
+            elif result < 0.46:  # 45% шанс на выигрыш
+                win_amount = 20
+                result_text = "✅ **Вы выиграли!**\nВы получили 20 монет!"
+                result_emoji = "🎯"
+            else:  # 54% шанс на проигрыш
+                win_amount = 0
+                result_text = "❌ **Вы проиграли**\nПопробуйте еще раз!"
+                result_emoji = "💸"
+
+            # Если выиграл - добавляем выигрыш
+            if win_amount > 0:
+                new_balance += win_amount
+                update_user_balance(user_id, new_balance)
+            
+            # Отправляем результат
+            bot.send_message(
+                user_id,
+                f"{result_emoji} **Результат игры:**\n\n"
+                f"{result_text}\n\n"
+                f"💰 **Ваш баланс:** {new_balance} монет\n\n"
+                f"🎮 Хотите сыграть еще?"
+            )
+            
+            # Логируем игру
+            log_user_action(message.from_user, "casino_play", f"[bet: 10, win: {win_amount}, balance: {new_balance}]")
+            
+        except Exception:
+            logger.exception("Error in play button handler: %s", message)
 
     # ==================== КОМАНДЫ БАНОВ ====================
 
@@ -1544,15 +2063,33 @@ if bot:
                 permanent_bans = c.fetchone()[0]
                 c.execute("SELECT COUNT(*) FROM bans WHERE ban_type = 'temporary'")
                 temporary_bans = c.fetchone()[0]
+                
+                # Добавляем статистику по бурмалде
+                c.execute("SELECT SUM(balance) FROM user_balance")
+                total_balance = c.fetchone()[0] or 0
+                c.execute("SELECT COUNT(*) FROM user_balance WHERE balance > 0")
+                users_with_balance = c.fetchone()[0]
+                
                 conn.close()
             except Exception as e:
                 logger.error("Failed to get ban stats: %s", e)
                 permanent_bans = 0
                 temporary_bans = 0
+                total_balance = 0
+                users_with_balance = 0
 
-            stats_text = f"Статистика бота:\n\nВсего пользователей: {count}\n"
-            stats_text += f"Перманентно забанено: {permanent_bans}\n"
-            stats_text += f"Временно забанено: {temporary_bans}"
+            stats_text = f"📊 Статистика бота:\n\n"
+            stats_text += f"👥 Всего пользователей: {count}\n"
+            stats_text += f"🚫 Перманентно забанено: {permanent_bans}\n"
+            stats_text += f"⏰ Временно забанено: {temporary_bans}\n\n"
+            stats_text += f"🎰 Статистика бурмалды:\n"
+            stats_text += f"💰 Общий баланс: {total_balance} монет\n"
+            stats_text += f"👤 Игроков с балансом: {users_with_balance}\n\n"
+            stats_text += f"🎁 Статистика промокодов:\n"
+            promo_stats = get_promocode_stats()
+            stats_text += f"📈 Всего промокодов: {promo_stats['total']}\n"
+            stats_text += f"✅ Использовано: {promo_stats['used']}\n"
+            stats_text += f"🆓 Доступно: {promo_stats['available']}"
             
             bot.send_message(user_id, stats_text)
             
@@ -1567,17 +2104,17 @@ if bot:
         """Показывает список всех пользователей (для всех админов)"""
         logger.info(f"🎯 /getusers handler triggered by {message.from_user.id}")
         try:
-            admin_id = int(message.from_user.id)  # 👈 Меняем название переменной
+            admin_id = int(message.from_user.id)
             
             if not is_admin(admin_id):
                 bot.send_message(admin_id, "❌ Эта команда только для администраторов.")
                 return
-    
+
             users = get_all_users()
             if not users:
                 bot.send_message(admin_id, "📝 База пользователей пуста.")
                 return
-    
+
             user_list = "Список всех пользователей:\n\n"
             
             for user in users:
@@ -1588,28 +2125,29 @@ if bot:
                 if not name.strip():
                     name = "No name"
                 
+                balance = get_user_balance(user_id)
                 user_entry = f"🆔 {user_id} | {name}"
                 if username:
                     user_entry += f" (@{username})"
-                user_entry += "\n"
-    
+                user_entry += f" | 💰 {balance} монет\n"
+
                 # Если текущий список слишком длинный, отправляем его
                 if len(user_list) + len(user_entry) > 4000:
-                    bot.send_message(admin_id, user_list)  # 👈 Отправляем админу
-                    user_list = "Список продолжение:\n\n"  # 👈 Начинаем новую часть
+                    bot.send_message(admin_id, user_list)
+                    user_list = "Список продолжение:\n\n"
                 
                 user_list += user_entry
-    
+
             # Отправляем оставшуюся часть
             if user_list:
-                bot.send_message(admin_id, user_list)  # 👈 Отправляем админу
+                bot.send_message(admin_id, user_list)
                 
             # Логируем просмотр списка пользователей
             log_admin_action(message.from_user, "getusers")
                 
         except Exception:
             logger.exception("Error in /getusers handler: %s", message)
-    
+
     @bot.message_handler(commands=['sendall'])
     def send_all_command(message):
         """Рассылка сообщения всем пользователям (для всех админов)"""
@@ -1755,17 +2293,24 @@ if bot:
                 reply_markup=ReplyKeyboardRemove()
             )
             
-            admin_text = f"📞 Пользователь {message.from_user.first_name} "
-            admin_text += f"@{message.from_user.username or 'без username'} "
-            admin_text += f"(ID: {user_id}) просит связаться."
-            
+            admin_text = f"📞 ЗАПРОС СВЯЗИ\n\n"
+            admin_text += f"👤 Пользователь: {message.from_user.first_name}"
+            if message.from_user.last_name:
+                admin_text += f" {message.from_user.last_name}"
+            if message.from_user.username:
+                admin_text += f" (@{message.from_user.username})"
+            admin_text += f"\n🆔 ID: {user_id}"
+            admin_text += f"\n⏰ {get_current_time()}"
+            admin_text += f"\n\n💎 Текущий баланс: {get_user_balance(user_id)} монет"
+            admin_text += f"\n\n✍️ Ответьте через: /reply {user_id}"
+
             admins = get_all_admins()
             for admin in admins:
                 try:
                     bot.send_message(admin[0], admin_text)
                 except Exception as e:
                     logger.error(f"Failed to notify admin {admin[0]}: {e}")
-            
+
             # Логируем запрос связи
             log_user_action(message.from_user, "contact_request")
             
@@ -1832,7 +2377,8 @@ if bot:
                 return
 
             try:
-                bot.send_message(target_user_id, f"💌 Поступил ответ от kvazador:\n\n{message.text}")
+                # Измененное сообщение для пользователя
+                bot.send_message(target_user_id, f"💌 Вам поступил ответ от модерации:\n\n{message.text}")
                 bot.send_message(user_id, f"✅ Ответ отправлен пользователю ID: {target_user_id}")
                 
                 # Логируем отправку ответа
@@ -1866,7 +2412,8 @@ if bot:
                 '/start', '/help', '/ban', '/spermban', '/unban', '/obossat',
                 '/addadmin', '/removeadmin', '/admins', '/stats', '/getusers',
                 '/sendall', '/reply', '/stop', '/adminlogs', '/clearlogs', '/logstats',
-                '/debug', '/myrights'
+                '/debug', '/myrights', '/casino', '/balance', '/get_promo', '/promo',
+                '/add_promo', '/promo_stats'
             ]
             
             if command not in known_commands:
@@ -1889,8 +2436,10 @@ if bot:
             if message.text.startswith('/'):
                 return
 
-            if message.text == "📞 Попросить связаться со мной.":
-                return handle_contact_request(message)
+            if message.text in ["📞 Попросить связаться со мной.", "🎰 Запустить бурмалду", 
+                              "🎁 Запросить промокод", "💰 Мой баланс", "⬅️ Назад",
+                              "🎰 Сыграть (10 монет)"]:
+                return
 
             ban_info = is_banned(user_id)
             if ban_info:
@@ -1921,6 +2470,7 @@ if bot:
                 user_info += f" (@{message.from_user.username})"
             user_info += f"\n🆔 ID: {user_id}"
             user_info += f"\n⏰ {get_current_time()}"
+            user_info += f"\n💰 Баланс: {get_user_balance(user_id)} монет"
 
             admins = get_all_admins()
             for admin in admins:
@@ -1972,6 +2522,7 @@ if bot:
                 user_info += f" (@{message.from_user.username})"
             user_info += f"\n🆔 ID: {user_id}"
             user_info += f"\n⏰ {get_current_time()}"
+            user_info += f"\n💰 Баланс: {get_user_balance(user_id)} монет"
 
             caption = f"{user_info}\n\n"
             if message.caption:
@@ -2048,6 +2599,7 @@ if bot:
                 user_info += f" (@{message.from_user.username})"
             user_info += f"\n🆔 ID: {user_id}"
             user_info += f"\n⏰ {get_current_time()}"
+            user_info += f"\n💰 Баланс: {get_user_balance(user_id)} монет"
 
             admins = get_all_admins()
             for admin in admins:
