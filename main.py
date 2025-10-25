@@ -1092,7 +1092,7 @@ if os.environ.get('RENDER'):
         else:
             return 'Invalid content type', 400
     
-    # ЯДЕРНЫЙ УДАР
+    # Настройка webhook
     bot.remove_webhook()
     time.sleep(2)
     bot.set_webhook(url=f"https://{os.environ.get('RENDER_EXTERNAL_HOSTNAME')}/webhook")
@@ -1104,10 +1104,15 @@ if os.environ.get('RENDER'):
         keep_alive()
         
 else:
-    # Локально используем polling
+    # Локально используем polling (ТОЛЬКО для разработки)
     if __name__ == "__main__":
-        keep_alive()
+        ensure_log_files()
+        init_db()
+        
         try:
-            bot.infinity_polling()
+            logger.info("🚀 Starting bot in POLLING mode (local development)")
+            bot.polling(none_stop=True, timeout=60)
+        except Exception as e:
+            logger.exception("Polling error: %s", e)
         except Exception as e:
             logger.exception("Polling error: %s", e)
