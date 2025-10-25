@@ -6,7 +6,7 @@ import time
 import logging
 import sqlite3
 import datetime
-from threading import Thread, Lock
+from threading import Thread
 import requests
 import json
 from collections import defaultdict
@@ -41,14 +41,31 @@ admin_handler.setFormatter(logging.Formatter('%(asctime)s - %(message)s'))
 admin_logger.addHandler(admin_handler)
 admin_logger.propagate = False
 
-# Глобальная блокировка для базы данных
-db_lock = Lock()
-
 def get_db_connection():
-    """Создает соединение с базой данных с блокировкой"""
-    conn = sqlite3.connect(DB_PATH, check_same_thread=False, timeout=30.0)
-    conn.execute("PRAGMA journal_mode=WAL")  # Включаем WAL режим для лучшей производительности
+    """Создает соединение с базой данных"""
+    conn = sqlite3.connect(DB_PATH, check_same_thread=False, timeout=10.0)
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA busy_timeout=5000")  # 5 секунд timeout вместо блокировки
     return conn
+
+def safe_db_execute(func, *args, **kwargs):
+    """Безопасное выполнение операций с БД с повторными попытками"""
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            return func(*args, **kwargs)
+        except sqlite3.OperationalError as e:
+            if "database is locked" in str(e) and attempt < max_retries - 1:
+                wait_time = 0.1 * (2 ** attempt)  # Экспоненциальная задержка
+                logger.warning(f"DB locked, retry {attempt + 1} in {wait_time}s")
+                time.sleep(wait_time)
+                continue
+            else:
+                logger.error(f"DB error after {max_retries} retries: {e}")
+                raise
+        except Exception as e:
+            logger.error(f"Unexpected DB error: {e}")
+            raise
 
 def get_current_time():
     """Возвращает текущее время в формате UTC"""
@@ -72,7 +89,6 @@ def format_admin_name(user):
 
 def format_target_info(user_id, username=None, first_name=None):
     """Форматирует информацию о цели для логов"""
-    #  4ИСТКА ДУБЛЕЙ "@"
     if username and "@" in username:
         username = username.replace("@@", "@").lstrip("@")
         username = f"@{username}" if username else "Неизвестно"
@@ -89,7 +105,6 @@ def log_admin_action(admin_user, action, target_info="", additional_info=""):
     try:
         admin_name = format_admin_name(admin_user)
         
-        # ЧИСТИМ ДУБЛИ В target_info
         if target_info and "@@" in target_info:
             target_info = target_info.replace("@@", "@")
         
@@ -110,7 +125,7 @@ def log_admin_action(admin_user, action, target_info="", additional_info=""):
 def log_user_action(user, action, target_info="", additional_info=""):
     """Логирует действия пользователей"""
     try:
-        user_name = format_admin_name(user)  # Используем ту же функцию форматирования
+        user_name = format_admin_name(user)
         log_message = f"{user_name} {action}"
         
         if target_info:
@@ -136,7 +151,6 @@ def parse_log_line(line):
             timestamp_str = parts[0].strip()
             content = parts[1].strip()
             
-            # Убираем миллисекунды если есть
             if ',' in timestamp_str:
                 timestamp_str = timestamp_str.split(',')[0]
             
@@ -153,7 +167,7 @@ def group_logs_by_date(logs):
     for log in logs:
         timestamp_str, content = parse_log_line(log)
         if timestamp_str and content:
-            date_part = timestamp_str.split()[0]  # Берем только дату
+            date_part = timestamp_str.split()[0]
             time_part = timestamp_str.split()[1] if ' ' in timestamp_str else "00:00:00"
             grouped[date_part].append((time_part, content))
     
@@ -171,23 +185,19 @@ def format_admin_logs_for_display(logs, days=30):
     
     result = ""
     
-    # Сортируем даты в обратном порядке (сначала новые)
     sorted_dates = sorted(grouped_logs.keys(), reverse=True)
     
     for date in sorted_dates:
         result += f"============={date}=============\n"
         
         day_logs = grouped_logs[date]
-        # Сортируем логи по времени внутри дня
         day_logs.sort(key=lambda x: x[0])
         
         for i, (time_part, content) in enumerate(day_logs, 1):
-            # Форматируем время (убираем секунды если нужно)
             display_time = time_part
             if len(display_time) > 8:
                 display_time = display_time[:8]
             
-            # Форматируем содержание лога
             formatted_content = format_log_content(content)
             
             result += f"{i}. {display_time} - {formatted_content}\n"
@@ -198,108 +208,76 @@ def format_admin_logs_for_display(logs, days=30):
 
 def format_log_content(content):
     """Форматирует содержание лога в нужный формат"""
-    # Обработка логов администраторов
     if "ADMIN" in content:
-        # Убираем префикс ADMIN и ID
         content = content.replace("ADMIN ", "")
         
-        # Извлекаем компоненты
         if " - " in content:
             admin_part, action_part = content.split(" - ", 1)
             
-            # Обрабатываем часть с администратором
             if "(" in admin_part and ")" in admin_part:
                 admin_id = admin_part.split(" ")[0]
                 admin_name = admin_part.split("(")[1].split(")")[0]
             else:
                 admin_name = admin_part
                 
-            # Форматируем действия
             formatted_action = format_admin_action(action_part)
             return f"{admin_name} {formatted_action}"
     
-    # Обработка пользовательских логов
     return content
 
 def format_admin_action(action):
     """Форматирует действие администратора"""
     action_lower = action.lower()
     
-    # Временный бан
     if "временный бан" in action_lower:
         return extract_ban_info(action, "ban")
-    
-    # Перманентный бан
     elif "перманентный бан" in action_lower:
         return extract_ban_info(action, "permban")
-    
-    # Разбан
     elif "разбан" in action_lower or "obossat" in action_lower:
         return extract_simple_action(action, "obossat")
-    
-    # Ответ пользователю
     elif "отправка ответа пользователю" in action_lower or "ответ" in action_lower:
         return extract_reply_info(action)
-    
-    # Добавление администратора
     elif "добавление администратора" in action_lower:
         return extract_admin_management(action, "addadmin")
-    
-    # Удаление администратора
     elif "удаление администратора" in action_lower:
         return extract_admin_management(action, "removeadmin")
-    
-    # Просмотр логов
     elif "просмотр логов" in action_lower:
         return extract_log_view(action)
-    
-    # Просмотр статистики
     elif "просмотр статистики" in action_lower:
         return "logstats"
-    
-    # Просмотр списка
     elif "просмотр списка" in action_lower:
         if "пользователей" in action_lower:
             return "getusers"
         elif "администраторов" in action_lower:
             return "admins"
-    
-    # Рассылка
     elif "рассылка" in action_lower:
         return extract_broadcast_info(action)
-    
-    # Очистка логов
     elif "очистка" in action_lower:
         return extract_log_clear(action)
     
-    # По умолчанию возвращаем оригинальное действие
     return action
 
 def extract_ban_info(action, ban_type):
     """Извлекает информацию о бане"""
     try:
-        # Ищем пользователя
         user_part = None
         if "пользователь:" in action:
             user_part = action.split("пользователь:")[1].split(",")[0].strip()
         elif "user:" in action:
             user_part = action.split("user:")[1].split(",")[0].strip()
         
-        # Ищем время
         time_part = ""
         if ban_type == "ban" and "время:" in action:
             time_part = action.split("время:")[1].split(",")[0].strip()
             if "сек" in time_part:
                 time_part = time_part.replace("сек", "сек")
         
-        # Ищем причину
         reason_part = ""
         if "причина:" in action:
             reason_part = action.split("причина:")[1].strip()
         elif "reason:" in action:
             reason_part = action.split("reason:")[1].strip()
         
-        # ЧИСТИМ ДУБЛИ "@"
         if user_part and "@@" in user_part:
             user_part = user_part.replace("@@", "@")
         
@@ -320,13 +298,11 @@ def extract_simple_action(action, action_type):
     try:
         if "пользователь:" in action:
             user_part = action.split("пользователь:")[1].strip()
-            # ЧИСТИМ ДУБЛИ "@"
             if "@@" in user_part:
                 user_part = user_part.replace("@@", "@")
             return f"{action_type} {user_part}"
         elif "user:" in action:
             user_part = action.split("user:")[1].strip()
-            # ЧИСТИМ ДУБЛИ "@"
             if "@@" in user_part:
                 user_part = user_part.replace("@@", "@")
             return f"{action_type} {user_part}"
@@ -342,7 +318,6 @@ def extract_reply_info(action):
         if "пользователь:" in action and "ответ:" in action:
             user_part = action.split("пользователь:")[1].split("|")[0].strip()
             reply_part = action.split("ответ:")[1].strip()
-            # ЧИСТИМ ДУБЛИ "@"
             if "@@" in user_part:
                 user_part = user_part.replace("@@", "@")
             return f"reply {user_part} [{reply_part}]"
@@ -357,19 +332,16 @@ def extract_admin_management(action, action_type):
     try:
         if "админ:" in action:
             admin_part = action.split("админ:")[1].strip()
-            # ЧИСТИМ ДУБЛИ "@"
             if "@@" in admin_part:
                 admin_part = admin_part.replace("@@", "@")
             return f"{action_type} {admin_part}"
         elif "new admin:" in action:
             admin_part = action.split("new admin:")[1].strip()
-            # ЧИСТИМ ДУБЛИ "@"
             if "@@" in admin_part:
                 admin_part = admin_part.replace("@@", "@")
             return f"{action_type} {admin_part}"
         elif "удален админ:" in action:
             admin_part = action.split("удален админ:")[1].strip()
-            # ЧИСТИМ ДУБЛИ "@"
             if "@@" in admin_part:
                 admin_part = admin_part.replace("@@", "@")
             return f"{action_type} {admin_part}"
@@ -429,7 +401,6 @@ def get_admin_logs(admin_id=None, days=30):
             logger.warning(f"Admin log file not found: {ADMIN_LOGFILE}")
             return []
         
-        # Используем UTC время для сравнения
         cutoff_date = (datetime.datetime.utcnow() - datetime.timedelta(days=days))
         
         with open(ADMIN_LOGFILE, 'r', encoding='utf-8') as f:
@@ -441,20 +412,16 @@ def get_admin_logs(admin_id=None, days=30):
                 if not line.strip():
                     continue
                     
-                # Парсим строку лога
                 timestamp_str, content = parse_log_line(line.strip())
                 if not timestamp_str or not content:
                     continue
                 
-                # Убираем миллисекунды если есть
                 if ',' in timestamp_str:
                     timestamp_str = timestamp_str.split(',')[0]
                 
-                # Парсим время из лога
                 try:
                     log_time = datetime.datetime.strptime(timestamp_str, '%Y-%m-%d %H:%M:%S')
                     
-                    # Сравниваем время
                     if log_time >= cutoff_date:
                         if admin_id:
                             if f"ADMIN {admin_id}" in content or f" {admin_id} " in content:
@@ -463,7 +430,6 @@ def get_admin_logs(admin_id=None, days=30):
                             logs.append(line.strip())
                 except ValueError as e:
                     logger.warning(f"Failed to parse timestamp '{timestamp_str}': {e}")
-                    # Все равно добавляем лог если не можем распарсить время
                     if not admin_id or f"ADMIN {admin_id}" in line or f" {admin_id} " in line:
                         logs.append(line.strip())
             
@@ -566,11 +532,10 @@ def init_db():
     try:
         logger.info(f"Initializing database with ADMIN_ID: {ADMIN_ID}")
         
-        with db_lock:
+        def _init():
             conn = get_db_connection()
             c = conn.cursor()
             
-            # Создаем таблицы
             c.execute('''CREATE TABLE IF NOT EXISTS users
                          (user_id INTEGER PRIMARY KEY, username TEXT, first_name TEXT, last_name TEXT, date_added TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
             c.execute('''CREATE TABLE IF NOT EXISTS admins
@@ -584,17 +549,14 @@ def init_db():
                           banned_by INTEGER,
                           unban_request_date TIMESTAMP)''')
             
-            # Создаем таблицы для бурмалды
             c.execute('''CREATE TABLE IF NOT EXISTS user_balance
                          (user_id INTEGER PRIMARY KEY, balance INTEGER DEFAULT 0)''')
             c.execute('''CREATE TABLE IF NOT EXISTS promocodes
                          (promocode TEXT PRIMARY KEY, value INTEGER, used BOOLEAN DEFAULT FALSE, used_by INTEGER)''')
             
-            # Добавляем главного админа если его нет
             c.execute("INSERT OR IGNORE INTO admins (user_id, username, first_name, is_main_admin) VALUES (?, ?, ?, ?)",
                       (ADMIN_ID, "kvazador", "kvazador", True))
             
-            # Проверяем что админ добавлен
             c.execute("SELECT * FROM admins WHERE user_id = ?", (ADMIN_ID,))
             admin_check = c.fetchone()
             if admin_check:
@@ -602,7 +564,6 @@ def init_db():
             else:
                 logger.error(f"❌ Failed to add main admin: {ADMIN_ID}")
             
-            # Показываем всех админов в логах
             c.execute("SELECT * FROM admins")
             all_admins = c.fetchall()
             logger.info(f"All admins in DB: {all_admins}")
@@ -611,207 +572,187 @@ def init_db():
             conn.close()
             logger.info(f"Database initialized at {DB_PATH}")
         
+        safe_db_execute(_init)
+        
     except Exception as e:
         logger.exception(f"Failed to initialize DB: {e}")
 
 def register_user(user_id, username, first_name, last_name):
     """Сохраняет/обновляет пользователя в БД."""
-    with db_lock:
-        try:
-            conn = get_db_connection()
-            c = conn.cursor()
-            c.execute("INSERT OR REPLACE INTO users (user_id, username, first_name, last_name) VALUES (?, ?, ?, ?)",
-                      (user_id, username, first_name, last_name))
-            # Создаем запись баланса если её нет
-            c.execute("INSERT OR IGNORE INTO user_balance (user_id, balance) VALUES (?, ?)", (user_id, 0))
-            conn.commit()
-            conn.close()
-            logger.debug("Registered user %s (%s)", user_id, username)
-        except Exception as e:
-            logger.exception("Failed to register user %s: %s", user_id, e)
+    def _register():
+        conn = get_db_connection()
+        c = conn.cursor()
+        c.execute("INSERT OR REPLACE INTO users (user_id, username, first_name, last_name) VALUES (?, ?, ?, ?)",
+                  (user_id, username, first_name, last_name))
+        c.execute("INSERT OR IGNORE INTO user_balance (user_id, balance) VALUES (?, ?)", (user_id, 0))
+        conn.commit()
+        conn.close()
+        logger.debug("Registered user %s (%s)", user_id, username)
+    
+    safe_db_execute(_register)
 
 def is_admin(user_id):
     """Проверяет, является ли пользователь админом"""
-    with db_lock:
-        try:
-            conn = get_db_connection()
-            c = conn.cursor()
-            c.execute("SELECT user_id FROM admins WHERE user_id = ?", (user_id,))
-            result = c.fetchone()
-            conn.close()
-            return result is not None
-        except Exception as e:
-            logger.exception("Failed to check admin status for %s: %s", user_id, e)
-            return False
+    def _check():
+        conn = get_db_connection()
+        c = conn.cursor()
+        c.execute("SELECT user_id FROM admins WHERE user_id = ?", (user_id,))
+        result = c.fetchone()
+        conn.close()
+        return result is not None
+    
+    return safe_db_execute(_check)
 
 def is_main_admin(user_id):
     """Проверяет, является ли пользователь главным админом"""
-    with db_lock:
-        try:
-            conn = get_db_connection()
-            c = conn.cursor()
-            c.execute("SELECT user_id FROM admins WHERE user_id = ? AND is_main_admin = TRUE", (user_id,))
-            result = c.fetchone()
-            conn.close()
-            return result is not None
-        except Exception as e:
-            logger.exception("Failed to check main admin status for %s: %s", user_id, e)
-            return False
+    def _check():
+        conn = get_db_connection()
+        c = conn.cursor()
+        c.execute("SELECT user_id FROM admins WHERE user_id = ? AND is_main_admin = TRUE", (user_id,))
+        result = c.fetchone()
+        conn.close()
+        return result is not None
+    
+    return safe_db_execute(_check)
 
 def add_admin(user_id, username, first_name):
     """Добавляет обычного админа"""
-    with db_lock:
-        try:
-            conn = get_db_connection()
-            c = conn.cursor()
-            c.execute("INSERT OR REPLACE INTO admins (user_id, username, first_name) VALUES (?, ?, ?)",
-                      (user_id, username, first_name))
-            conn.commit()
-            conn.close()
-            logger.info("Added admin %s (%s)", user_id, username)
-            return True
-        except Exception as e:
-            logger.exception("Failed to add admin %s: %s", user_id, e)
-            return False
+    def _add():
+        conn = get_db_connection()
+        c = conn.cursor()
+        c.execute("INSERT OR REPLACE INTO admins (user_id, username, first_name) VALUES (?, ?, ?)",
+                  (user_id, username, first_name))
+        conn.commit()
+        conn.close()
+        logger.info("Added admin %s (%s)", user_id, username)
+        return True
+    
+    return safe_db_execute(_add)
 
 def remove_admin(user_id):
     """Удаляет админа (кроме главного)"""
-    with db_lock:
-        try:
-            conn = get_db_connection()
-            c = conn.cursor()
-            c.execute("DELETE FROM admins WHERE user_id = ? AND is_main_admin = FALSE", (user_id,))
-            conn.commit()
-            conn.close()
-            logger.info("Removed admin %s", user_id)
-            return True
-        except Exception as e:
-            logger.exception("Failed to remove admin %s: %s", user_id, e)
-            return False
+    def _remove():
+        conn = get_db_connection()
+        c = conn.cursor()
+        c.execute("DELETE FROM admins WHERE user_id = ? AND is_main_admin = FALSE", (user_id,))
+        conn.commit()
+        conn.close()
+        logger.info("Removed admin %s", user_id)
+        return True
+    
+    return safe_db_execute(_remove)
 
 def get_all_users():
     """Возвращает список всех пользователей"""
-    with db_lock:
-        try:
-            conn = get_db_connection()
-            c = conn.cursor()
-            c.execute("SELECT user_id, username, first_name, last_name FROM users")
-            users = c.fetchall()
-            conn.close()
-            return users
-        except Exception as e:
-            logger.exception("Failed to get users list: %s", e)
-            return []
+    def _get_users():
+        conn = get_db_connection()
+        c = conn.cursor()
+        c.execute("SELECT user_id, username, first_name, last_name FROM users")
+        users = c.fetchall()
+        conn.close()
+        return users
+    
+    return safe_db_execute(_get_users)
 
 def get_user_count():
     """Возвращает количество пользователей"""
-    with db_lock:
-        try:
-            conn = get_db_connection()
-            c = conn.cursor()
-            c.execute("SELECT COUNT(*) FROM users")
-            count = c.fetchone()[0]
-            conn.close()
-            return count
-        except Exception as e:
-            logger.exception("Failed to get user count: %s", e)
-            return 0
+    def _get_count():
+        conn = get_db_connection()
+        c = conn.cursor()
+        c.execute("SELECT COUNT(*) FROM users")
+        count = c.fetchone()[0]
+        conn.close()
+        return count
+    
+    return safe_db_execute(_get_count)
 
 def get_all_admins():
     """Возвращает список всех админов"""
-    with db_lock:
-        try:
-            conn = get_db_connection()
-            c = conn.cursor()
-            c.execute("SELECT user_id, username, first_name, is_main_admin FROM admins")
-            admins = c.fetchall()
-            conn.close()
-            return admins
-        except Exception as e:
-            logger.exception("Failed to get admins list: %s", e)
-            return []
+    def _get_admins():
+        conn = get_db_connection()
+        c = conn.cursor()
+        c.execute("SELECT user_id, username, first_name, is_main_admin FROM admins")
+        admins = c.fetchall()
+        conn.close()
+        return admins
+    
+    return safe_db_execute(_get_admins)
 
 # ==================== СИСТЕМА БАНОВ ====================
 
 def ban_user(user_id, ban_type, duration_seconds=None, reason="", banned_by=None):
     """Банит пользователя"""
-    with db_lock:
-        try:
-            conn = get_db_connection()
-            c = conn.cursor()
-            
-            if ban_type == "permanent":
-                c.execute('''INSERT OR REPLACE INTO bans 
-                            (user_id, ban_type, ban_duration_seconds, ban_reason, banned_by) 
-                            VALUES (?, ?, ?, ?, ?)''',
-                         (user_id, ban_type, None, reason, banned_by))
-            else:  # temporary
-                c.execute('''INSERT OR REPLACE INTO bans 
-                            (user_id, ban_type, ban_duration_seconds, ban_reason, banned_by) 
-                            VALUES (?, ?, ?, ?, ?)''',
-                         (user_id, ban_type, duration_seconds, reason, banned_by))
-            
-            conn.commit()
-            conn.close()
-            logger.info("Banned user %s: type=%s, duration=%s", user_id, ban_type, duration_seconds)
-            return True
-        except Exception as e:
-            logger.exception("Failed to ban user %s: %s", user_id, e)
-            return False
+    def _ban():
+        conn = get_db_connection()
+        c = conn.cursor()
+        
+        if ban_type == "permanent":
+            c.execute('''INSERT OR REPLACE INTO bans 
+                        (user_id, ban_type, ban_duration_seconds, ban_reason, banned_by) 
+                        VALUES (?, ?, ?, ?, ?)''',
+                     (user_id, ban_type, None, reason, banned_by))
+        else:
+            c.execute('''INSERT OR REPLACE INTO bans 
+                        (user_id, ban_type, ban_duration_seconds, ban_reason, banned_by) 
+                        VALUES (?, ?, ?, ?, ?)''',
+                     (user_id, ban_type, duration_seconds, reason, banned_by))
+        
+        conn.commit()
+        conn.close()
+        logger.info("Banned user %s: type=%s, duration=%s", user_id, ban_type, duration_seconds)
+        return True
+    
+    return safe_db_execute(_ban)
 
 def unban_user(user_id):
     """Разбанивает пользователя"""
-    with db_lock:
-        try:
-            conn = get_db_connection()
-            c = conn.cursor()
-            c.execute("DELETE FROM bans WHERE user_id = ?", (user_id,))
-            conn.commit()
-            conn.close()
-            logger.info("Unbanned user %s", user_id)
-            return True
-        except Exception as e:
-            logger.exception("Failed to unban user %s: %s", user_id, e)
-            return False
+    def _unban():
+        conn = get_db_connection()
+        c = conn.cursor()
+        c.execute("DELETE FROM bans WHERE user_id = ?", (user_id,))
+        conn.commit()
+        conn.close()
+        logger.info("Unbanned user %s", user_id)
+        return True
+    
+    return safe_db_execute(_unban)
 
 def is_banned(user_id):
     """Проверяет, забанен ли пользователь и возвращает информацию о бане"""
-    with db_lock:
-        try:
-            conn = get_db_connection()
-            c = conn.cursor()
-            c.execute("SELECT ban_type, ban_duration_seconds, banned_at, ban_reason FROM bans WHERE user_id = ?", (user_id,))
-            result = c.fetchone()
-            conn.close()
-            
-            if not result:
-                return None
-            
-            ban_type, duration_seconds, banned_at, reason = result
-            
-            if ban_type == "temporary" and duration_seconds:
-                banned_time = datetime.datetime.strptime(banned_at, '%Y-%m-%d %H:%M:%S')
-                current_time = datetime.datetime.utcnow()
-                time_passed = (current_time - banned_time).total_seconds()
-                
-                if time_passed >= duration_seconds:
-                    unban_user(user_id)
-                    return None
-                else:
-                    time_left = duration_seconds - time_passed
-                    return {
-                        'type': ban_type,
-                        'time_left': time_left,
-                        'reason': reason
-                    }
-            
-            return {
-                'type': ban_type,
-                'reason': reason
-            }
-        except Exception as e:
-            logger.exception("Failed to check ban status for %s: %s", user_id, e)
+    def _check_ban():
+        conn = get_db_connection()
+        c = conn.cursor()
+        c.execute("SELECT ban_type, ban_duration_seconds, banned_at, ban_reason FROM bans WHERE user_id = ?", (user_id,))
+        result = c.fetchone()
+        conn.close()
+        
+        if not result:
             return None
+        
+        ban_type, duration_seconds, banned_at, reason = result
+        
+        if ban_type == "temporary" and duration_seconds:
+            banned_time = datetime.datetime.strptime(banned_at, '%Y-%m-%d %H:%M:%S')
+            current_time = datetime.datetime.utcnow()
+            time_passed = (current_time - banned_time).total_seconds()
+            
+            if time_passed >= duration_seconds:
+                unban_user(user_id)
+                return None
+            else:
+                time_left = duration_seconds - time_passed
+                return {
+                    'type': ban_type,
+                    'time_left': time_left,
+                    'reason': reason
+                }
+        
+        return {
+            'type': ban_type,
+            'reason': reason
+        }
+    
+    return safe_db_execute(_check_ban)
 
 def format_time_left(seconds):
     """Форматирует оставшееся время в читаемый вид"""
@@ -828,150 +769,132 @@ def format_time_left(seconds):
 
 def can_request_unban(user_id):
     """Проверяет, может ли пользователь запросить разбан (прошла ли неделя с последнего запроса)"""
-    with db_lock:
-        try:
-            conn = get_db_connection()
-            c = conn.cursor()
-            c.execute("SELECT unban_request_date FROM bans WHERE user_id = ? AND ban_type = 'permanent'", (user_id,))
-            result = c.fetchone()
-            conn.close()
-            
-            if not result or not result[0]:
-                return True
-            
-            last_request = datetime.datetime.strptime(result[0], '%Y-%m-%d %H:%M:%S')
-            current_time = datetime.datetime.utcnow()
-            time_passed = (current_time - last_request).total_seconds()
-            
-            return time_passed >= 7 * 24 * 3600
-        except Exception as e:
-            logger.exception("Failed to check unban request for %s: %s", user_id, e)
-            return False
+    def _check():
+        conn = get_db_connection()
+        c = conn.cursor()
+        c.execute("SELECT unban_request_date FROM bans WHERE user_id = ? AND ban_type = 'permanent'", (user_id,))
+        result = c.fetchone()
+        conn.close()
+        
+        if not result or not result[0]:
+            return True
+        
+        last_request = datetime.datetime.strptime(result[0], '%Y-%m-%d %H:%M:%S')
+        current_time = datetime.datetime.utcnow()
+        time_passed = (current_time - last_request).total_seconds()
+        
+        return time_passed >= 7 * 24 * 3600
+    
+    return safe_db_execute(_check)
 
 def update_unban_request_date(user_id):
     """Обновляет дату последнего запроса на разбан"""
-    with db_lock:
-        try:
-            conn = get_db_connection()
-            c = conn.cursor()
-            c.execute("UPDATE bans SET unban_request_date = CURRENT_TIMESTAMP WHERE user_id = ?", (user_id,))
-            conn.commit()
-            conn.close()
-            return True
-        except Exception as e:
-            logger.exception("Failed to update unban request date for %s: %s", user_id, e)
-            return False
+    def _update():
+        conn = get_db_connection()
+        c = conn.cursor()
+        c.execute("UPDATE bans SET unban_request_date = CURRENT_TIMESTAMP WHERE user_id = ?", (user_id,))
+        conn.commit()
+        conn.close()
+        return True
+    
+    return safe_db_execute(_update)
 
 # ==================== СИСТЕМА БУРМАЛДЫ И ПРОМОКОДОВ ====================
 
 def get_user_balance(user_id):
     """Возвращает баланс пользователя"""
-    with db_lock:
-        try:
-            conn = get_db_connection()
-            c = conn.cursor()
-            c.execute("SELECT balance FROM user_balance WHERE user_id = ?", (user_id,))
-            result = c.fetchone()
-            conn.close()
-            return result[0] if result else 0
-        except Exception as e:
-            logger.exception("Failed to get user balance for %s: %s", user_id, e)
-            return 0
+    def _get_balance():
+        conn = get_db_connection()
+        c = conn.cursor()
+        c.execute("SELECT balance FROM user_balance WHERE user_id = ?", (user_id,))
+        result = c.fetchone()
+        conn.close()
+        return result[0] if result else 0
+    
+    return safe_db_execute(_get_balance)
 
 def update_user_balance(user_id, new_balance):
     """Обновляет баланс пользователя"""
-    with db_lock:
-        try:
-            conn = get_db_connection()
-            c = conn.cursor()
-            c.execute("UPDATE user_balance SET balance = ? WHERE user_id = ?", (new_balance, user_id))
-            conn.commit()
-            conn.close()
-            return True
-        except Exception as e:
-            logger.exception("Failed to update user balance for %s: %s", user_id, e)
-            return False
+    def _update():
+        conn = get_db_connection()
+        c = conn.cursor()
+        c.execute("UPDATE user_balance SET balance = ? WHERE user_id = ?", (new_balance, user_id))
+        conn.commit()
+        conn.close()
+        return True
+    
+    return safe_db_execute(_update)
 
 def add_promocode(promocode, value):
     """Добавляет промокод"""
-    with db_lock:
-        try:
-            conn = get_db_connection()
-            c = conn.cursor()
-            c.execute("INSERT OR REPLACE INTO promocodes (promocode, value) VALUES (?, ?)", (promocode, value))
-            conn.commit()
-            conn.close()
-            logger.info("Added promocode: %s with value: %s", promocode, value)
-            return True
-        except Exception as e:
-            logger.exception("Failed to add promocode %s: %s", promocode, e)
-            return False
+    def _add():
+        conn = get_db_connection()
+        c = conn.cursor()
+        c.execute("INSERT OR REPLACE INTO promocodes (promocode, value) VALUES (?, ?)", (promocode, value))
+        conn.commit()
+        conn.close()
+        logger.info("Added promocode: %s with value: %s", promocode, value)
+        return True
+    
+    return safe_db_execute(_add)
 
 def use_promocode(promocode, user_id):
     """Активирует промокод для пользователя"""
-    with db_lock:
-        try:
-            conn = get_db_connection()
-            c = conn.cursor()
+    def _use():
+        conn = get_db_connection()
+        c = conn.cursor()
+        
+        c.execute("SELECT value, used FROM promocodes WHERE promocode = ?", (promocode,))
+        result = c.fetchone()
+        
+        if not result:
+            return None, "Промокод не найден"
+        
+        value, used = result
+        if used:
+            return None, "Промокод уже использован"
+        
+        c.execute("UPDATE promocodes SET used = TRUE, used_by = ? WHERE promocode = ?", (user_id, promocode))
+        
+        current_balance = get_user_balance(user_id)
+        new_balance = current_balance + value
+        success = update_user_balance(user_id, new_balance)
+        
+        if not success:
+            return None, "Ошибка при обновлении баланса"
             
-            # Проверяем существует ли промокод и не использован ли он
-            c.execute("SELECT value, used FROM promocodes WHERE promocode = ?", (promocode,))
-            result = c.fetchone()
-            
-            if not result:
-                return None, "Промокод не найден"
-            
-            value, used = result
-            if used:
-                return None, "Промокод уже использован"
-            
-            # Активируем промокод
-            c.execute("UPDATE promocodes SET used = TRUE, used_by = ? WHERE promocode = ?", (user_id, promocode))
-            
-            # Обновляем баланс пользователя
-            current_balance = get_user_balance(user_id)
-            new_balance = current_balance + value
-            success = update_user_balance(user_id, new_balance)
-            
-            if not success:
-                return None, "Ошибка при обновлении баланса"
-                
-            conn.commit()
-            conn.close()
-            
-            logger.info("User %s used promocode %s, got %s coins, new balance: %s", user_id, promocode, value, new_balance)
-            return value, f"Промокод активирован! Вы получили {value} монет."
-            
-        except Exception as e:
-            logger.exception("Failed to use promocode %s for user %s: %s", promocode, user_id, e)
-            return None, "Ошибка при активации промокода"
+        conn.commit()
+        conn.close()
+        
+        logger.info("User %s used promocode %s, got %s coins, new balance: %s", user_id, promocode, value, new_balance)
+        return value, f"Промокод активирован! Вы получили {value} монет."
+    
+    return safe_db_execute(_use)
 
 def get_promocode_stats():
     """Возвращает статистику по промокодам"""
-    with db_lock:
-        try:
-            conn = get_db_connection()
-            c = conn.cursor()
-            
-            c.execute("SELECT COUNT(*) FROM promocodes")
-            total = c.fetchone()[0]
-            
-            c.execute("SELECT COUNT(*) FROM promocodes WHERE used = TRUE")
-            used = c.fetchone()[0]
-            
-            c.execute("SELECT COUNT(*) FROM promocodes WHERE used = FALSE")
-            available = c.fetchone()[0]
-            
-            conn.close()
-            
-            return {
-                'total': total,
-                'used': used,
-                'available': available
-            }
-        except Exception as e:
-            logger.exception("Failed to get promocode stats: %s", e)
-            return {'total': 0, 'used': 0, 'available': 0}
+    def _get_stats():
+        conn = get_db_connection()
+        c = conn.cursor()
+        
+        c.execute("SELECT COUNT(*) FROM promocodes")
+        total = c.fetchone()[0]
+        
+        c.execute("SELECT COUNT(*) FROM promocodes WHERE used = TRUE")
+        used = c.fetchone()[0]
+        
+        c.execute("SELECT COUNT(*) FROM promocodes WHERE used = FALSE")
+        available = c.fetchone()[0]
+        
+        conn.close()
+        
+        return {
+            'total': total,
+            'used': used,
+            'available': available
+        }
+    
+    return safe_db_execute(_get_stats)
 
 user_reply_mode = {}
 user_unban_mode = {}
@@ -1022,7 +945,6 @@ if bot:
             markup.add(KeyboardButton("🎁 Запросить промокод"))
             bot.send_message(user_id, welcome_text, reply_markup=markup)
             
-            # Логируем старт пользователя
             log_user_action(message.from_user, "start")
             
         except Exception:
@@ -1115,7 +1037,6 @@ if bot:
                 )
                 return
 
-            # Создаем клавиатуру для ставок
             markup = ReplyKeyboardMarkup(resize_keyboard=True)
             markup.add(KeyboardButton("🎰 Сыграть (10 монет)"))
             markup.add(KeyboardButton("💰 Мой баланс"))
@@ -1173,7 +1094,6 @@ if bot:
                     bot.send_message(user_id, f"🚫 Вы забанены и не можете запрашивать промокоды. До разбана осталось: {time_left}")
                 return
 
-            # Отправляем сообщение админам
             admin_text = f"🎁 ЗАПРОС ПРОМОКОДА\n\n"
             admin_text += f"👤 Пользователь: {message.from_user.first_name}"
             if message.from_user.last_name:
@@ -1202,7 +1122,6 @@ if bot:
                 "⚠️ Каждый промокод можно использовать только 1 раз!"
             )
             
-            # Логируем запрос промокода
             log_user_action(message.from_user, "promo_request")
             
         except Exception:
@@ -1240,10 +1159,8 @@ if bot:
             value, result_message = use_promocode(promocode, user_id)
             
             if value is not None:
-                # Успешная активация
                 new_balance = get_user_balance(user_id)
                 
-                # Отправляем уведомление админам
                 admin_text = f"✅ ПРОМОКОД АКТИВИРОВАН\n\n"
                 admin_text += f"👤 Пользователь: {message.from_user.first_name}"
                 if message.from_user.username:
@@ -1268,11 +1185,9 @@ if bot:
                     f"🎰 Хотите испытать удачу? Запустите бурмалду: /casino"
                 )
                 
-                # Логируем активацию промокода
                 log_user_action(message.from_user, "promo_activate", f"[{promocode} -> {value} coins]")
                 
             else:
-                # Ошибка активации
                 bot.send_message(
                     user_id,
                     f"❌ {result_message}\n\n"
@@ -1327,7 +1242,6 @@ if bot:
                     f"💡 Отправьте его пользователю через /reply USER_ID"
                 )
                 
-                # Логируем создание промокода
                 log_admin_action(message.from_user, "add_promo", f"[{promocode} -> {value} coins]")
                 
             else:
@@ -1349,7 +1263,6 @@ if bot:
 
             stats = get_promocode_stats()
             
-            # Получаем список использованных промокодов
             try:
                 conn = get_db_connection()
                 c = conn.cursor()
@@ -1367,7 +1280,7 @@ if bot:
 
             if used_promos:
                 stats_text += "🎁 Использованные промокоды:\n"
-                for promo in used_promos[:10]:  # Показываем первые 10
+                for promo in used_promos[:10]:
                     promocode, value, used_by = promo
                     stats_text += f"{promocode} - {value} монет (ID: {used_by})\n"
                 
@@ -1376,7 +1289,6 @@ if bot:
 
             bot.send_message(user_id, stats_text)
             
-            # Логируем просмотр статистики промокодов
             log_admin_action(message.from_user, "promo_stats")
             
         except Exception:
@@ -1433,32 +1345,28 @@ if bot:
                 )
                 return
 
-            # Снимаем ставку
             new_balance = balance - 10
             update_user_balance(user_id, new_balance)
             
-            # Генерируем результат
             result = random.random()
             
-            if result < 0.01:  # 1% шанс на джекпот
+            if result < 0.01:
                 win_amount = 100
                 result_text = "🎉 ДЖЕКПОТ! 🎉\nВы выиграли 100 монет!"
                 result_emoji = "💰"
-            elif result < 0.46:  # 45% шанс на выигрыш
+            elif result < 0.46:
                 win_amount = 20
                 result_text = "✅ Вы выиграли!\nВы получили 20 монет!"
                 result_emoji = "🎯"
-            else:  # 54% шанс на проигрыш
+            else:
                 win_amount = 0
                 result_text = "❌ Вы проиграли\nПопробуйте еще раз!"
                 result_emoji = "💸"
 
-            # Если выиграл - добавляем выигрыш
             if win_amount > 0:
                 new_balance += win_amount
                 update_user_balance(user_id, new_balance)
             
-            # Отправляем результат
             bot.send_message(
                 user_id,
                 f"{result_emoji} Результат игры:\n\n"
@@ -1467,7 +1375,6 @@ if bot:
                 f"🎮 Хотите сыграть еще?"
             )
             
-            # Логируем игру
             log_user_action(message.from_user, "casino_play", f"[bet: 10, win: {win_amount}, balance: {new_balance}]")
             
         except Exception:
@@ -1527,7 +1434,6 @@ if bot:
                 target_info = format_target_info(target_id, target_username, target_first_name)
                 bot.send_message(user_id, f"✅ Пользователь {target_info} забанен на {format_time_left(duration)}.\nПричина: {reason}")
                 
-                # Логируем действие в новом формате
                 log_admin_action(message.from_user, "ban", target_info, f"[{duration}сек] [{reason}]")
             else:
                 bot.send_message(user_id, "❌ Ошибка при бане пользователя.")
@@ -1581,7 +1487,6 @@ if bot:
                 target_info = format_target_info(target_id, target_username, target_first_name)
                 bot.send_message(user_id, f"✅ Пользователь {target_info} забанен навсегда.\nПричина: {reason}")
                 
-                # Логируем действие в новом формате
                 log_admin_action(message.from_user, "permban", target_info, f"[{reason}]")
             else:
                 bot.send_message(user_id, "❌ Ошибка при бане пользователя.")
@@ -1660,7 +1565,6 @@ if bot:
                 target_info = format_target_info(target_id, target_username, target_first_name)
                 bot.send_message(user_id, f"✅ Пользователь {target_info} разбанен.")
                 
-                # Логируем действие в новом формате
                 log_admin_action(message.from_user, "obossat", target_info)
             else:
                 bot.send_message(user_id, "❌ Ошибка при разбане пользователя.")
@@ -1693,7 +1597,7 @@ if bot:
             update_unban_request_date(user_id)
             user_unban_mode[user_id] = False
             
-            bot.send_message(user_id, "✅ Ваш запрос на разбан отправлен модераторам. Следующая попытка будет доступна через недели.")
+            bot.send_message(user_id, "✅ Ваш запрос на разбан отправлен модераторам. Следующая попытка будет доступна через неделю.")
             
         except Exception:
             logger.exception("Error in unban request handler: %s", message)
@@ -1748,7 +1652,6 @@ if bot:
 
             formatted_logs = format_admin_logs_for_display(logs, days)
             
-            # Разбиваем на части если слишком длинное сообщение
             if len(formatted_logs) > 4000:
                 parts = [formatted_logs[i:i+4000] for i in range(0, len(formatted_logs), 4000)]
                 for part in parts:
@@ -1759,7 +1662,6 @@ if bot:
 
             bot.send_message(user_id, f"📈 Всего записей: {len(logs)}")
 
-            # Логируем просмотр логов
             action = f"adminlogs"
             target_info = f"{target_admin_id}" if target_admin_id else "all"
             additional_info = f"[{days} дней]"
@@ -1792,7 +1694,6 @@ if bot:
                         f.write("")
                     bot.send_message(user_id, "✅ Все логи администраторов очищены.")
                     
-                    # Логируем действие в новом формате
                     log_admin_action(message.from_user, "clearlogs", "all")
                     
                 except Exception as e:
@@ -1825,7 +1726,6 @@ if bot:
                     
                     bot.send_message(user_id, f"✅ Логи администратора {target_id} очищены.")
                     
-                    # Логируем действие в новом формате
                     log_admin_action(message.from_user, "clearlogs", f"{target_id}")
                     
                 except ValueError:
@@ -1871,7 +1771,6 @@ if bot:
             
             for log in logs:
                 try:
-                    # Извлекаем ID админа и действие из лога
                     if 'ADMIN' in log:
                         parts = log.split('ADMIN ', 1)
                         if len(parts) > 1:
@@ -1884,7 +1783,6 @@ if bot:
                                 admin_actions[admin_id] = 0
                             admin_actions[admin_id] += 1
                             
-                            # Определяем тип действия
                             action_type = "другое"
                             if 'бан' in action_part.lower():
                                 action_type = "бан"
@@ -1930,7 +1828,6 @@ if bot:
 
             bot.send_message(user_id, stats_text)
 
-            # Логируем просмотр статистики
             log_admin_action(message.from_user, "logstats", f"[{days} дней]")
             
         except Exception:
@@ -1976,7 +1873,6 @@ if bot:
                 target_info = format_target_info(target_id, username, first_name)
                 bot.send_message(user_id, f"✅ Пользователь {target_info} добавлен как администратор.")
                 
-                # Логируем действие в новом формате
                 log_admin_action(message.from_user, "addadmin", target_info)
                 
                 try:
@@ -2027,7 +1923,6 @@ if bot:
                     
                 bot.send_message(user_id, f"✅ Администратор {target_info} удален.")
                 
-                # Логируем действие в новом формате
                 log_admin_action(message.from_user, "removeadmin", target_info)
                 
                 try:
@@ -2067,7 +1962,6 @@ if bot:
 
             bot.send_message(user_id, admin_list)
             
-            # Логируем просмотр списка админов
             log_admin_action(message.from_user, "admins")
             
         except Exception:
@@ -2094,7 +1988,6 @@ if bot:
                 c.execute("SELECT COUNT(*) FROM bans WHERE ban_type = 'temporary'")
                 temporary_bans = c.fetchone()[0]
                 
-                # Добавляем статистику по бурмалде
                 c.execute("SELECT SUM(balance) FROM user_balance")
                 total_balance = c.fetchone()[0] or 0
                 c.execute("SELECT COUNT(*) FROM user_balance WHERE balance > 0")
@@ -2123,7 +2016,6 @@ if bot:
             
             bot.send_message(user_id, stats_text)
             
-            # Логируем просмотр статистики
             log_admin_action(message.from_user, "stats")
             
         except Exception:
@@ -2161,18 +2053,15 @@ if bot:
                     user_entry += f" (@{username})"
                 user_entry += f" | 💰 {balance} монет\n"
 
-                # Если текущий список слишком длинный, отправляем его
                 if len(user_list) + len(user_entry) > 4000:
                     bot.send_message(admin_id, user_list)
                     user_list = "Список продолжение:\n\n"
                 
                 user_list += user_entry
 
-            # Отправляем оставшуюся часть
             if user_list:
                 bot.send_message(admin_id, user_list)
                 
-            # Логируем просмотр списка пользователей
             log_admin_action(message.from_user, "getusers")
                 
         except Exception:
@@ -2220,7 +2109,6 @@ if bot:
 
             bot.send_message(user_id, f"✅ Рассылка завершена:\n\nУспешно: {success_count}\nНе удалось: {fail_count}\nПропущено (забанены): {len(users) - success_count - fail_count}")
             
-            # Логируем рассылку
             log_admin_action(message.from_user, "sendall", f"[users: {len(users)}, success: {success_count}]")
             
         except Exception:
@@ -2250,7 +2138,6 @@ if bot:
             ban_info = is_banned(user_id)
             debug_text += f"Бан: {ban_info if ban_info else 'Нет'}\n"
             
-            # Проверка файлов логов
             debug_text += f"\nФайлы логов:\n"
             debug_text += f"• Основной лог: {os.path.exists(LOGFILE)}\n"
             debug_text += f"• Логи админов: {os.path.exists(ADMIN_LOGFILE)}\n"
@@ -2341,7 +2228,6 @@ if bot:
                 except Exception as e:
                     logger.error(f"Failed to notify admin {admin[0]}: {e}")
 
-            # Логируем запрос связи
             log_user_action(message.from_user, "contact_request")
             
             restore_button(user_id)
@@ -2407,11 +2293,9 @@ if bot:
                 return
 
             try:
-                # Измененное сообщение для пользователя
                 bot.send_message(target_user_id, f"💌 Вам поступил ответ от модерации:\n\n{message.text}")
                 bot.send_message(user_id, f"✅ Ответ отправлен пользователю ID: {target_user_id}")
                 
-                # Логируем отправку ответа
                 target_info = f"ID: {target_user_id}"
                 try:
                     target_chat = bot.get_chat(target_user_id)
@@ -2511,7 +2395,6 @@ if bot:
 
             bot.send_message(user_id, "✅ Сообщение отправлено kvazador!")
             
-            # Логируем отправку сообщения пользователем
             if not is_admin(user_id):
                 log_user_action(message.from_user, "message", f"[{message.text}]")
             
@@ -2578,7 +2461,6 @@ if bot:
 
             bot.send_message(user_id, "✅ Медиа-сообщение отправлено kvazador!")
             
-            # Логируем отправку медиа пользователем
             if not is_admin(user_id):
                 media_type = "media"
                 if message.photo:
@@ -2656,7 +2538,6 @@ if bot:
 
             bot.send_message(user_id, "✅ Данные отправлены kvazador!")
             
-            # Логируем отправку контакта/локации
             if not is_admin(user_id):
                 data_type = "contact" if message.contact else "location"
                 log_user_action(message.from_user, f"{data_type}_send")
@@ -2678,7 +2559,6 @@ def start_bot_loop():
         logger.error("Bot object is not created because BOT_TOKEN is missing.")
         return
 
-    # Создаем файлы логов при запуске
     ensure_log_files()
     init_db()
 
