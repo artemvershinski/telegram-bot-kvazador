@@ -1081,7 +1081,20 @@ def start_bot_loop():
             time.sleep(10)
 
 if __name__ == "__main__":
+    # Сбрасываем все предыдущие соединения
+    try:
+        bot.remove_webhook()
+        time.sleep(2)
+    except:
+        pass
+    
     keep_alive()
+    
+    # Ждем 10 секунд перед запуском polling
+    logger.info("Waiting 10 seconds for old instances to die...")
+    time.sleep(10)
+    
+    logger.info("Starting bot polling...")
     try:
         start_bot_loop()
     except KeyboardInterrupt:
