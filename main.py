@@ -1040,6 +1040,7 @@ def get_main_keyboard():
     """Главная клавиатура меню"""
     markup = ReplyKeyboardMarkup(resize_keyboard=True)
     markup.add(KeyboardButton("🎰 Запустить бурмалду"))
+    markup.add(KeyboardButton("♠️ Играть в Blackjack"))
     markup.add(KeyboardButton("🎁 Запросить промокод"))
     return markup
 
@@ -1175,6 +1176,56 @@ def spin_slots_animation(bot, chat_id, bet_amount):
     
     return final_result
 
+# ==================== СИСТЕМА BLACKJACK ====================
+
+def create_deck():
+    """Создает колоду из 52 карт"""
+    suits = ['♠️', '♥️', '♦️', '♣️']
+    ranks = ['2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K', 'A']
+    deck = [f'{rank}{suit}' for suit in suits for rank in ranks]
+    random.shuffle(deck)
+    return deck
+
+def calculate_hand_value(hand):
+    """Подсчитывает сумму очков в руке с учетом тузов"""
+    value = 0
+    aces = 0
+    
+    for card in hand:
+        rank = card[:-2]  # убираем масть (2 символа эмодзи)
+        if rank in ['J', 'Q', 'K']:
+            value += 10
+        elif rank == 'A':
+            value += 11
+            aces += 1
+        else:
+            value += int(rank)
+    
+    # Корректируем тузы если перебор
+    while value > 21 and aces > 0:
+        value -= 10
+        aces -= 1
+    
+    return value
+
+def format_hand(hand, hide_dealer=False):
+    """Форматирует руку для отображения"""
+    if hide_dealer and len(hand) > 1:
+        return f"[{hand[0]}, ❓]"  # Первая карта дилера скрыта
+    return "[" + ", ".join(hand) + "]"
+
+def get_blackjack_keyboard():
+    """Клавиатура для блекджека"""
+    markup = ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
+    markup.add(
+        KeyboardButton("⬆️ Еще карту"),
+        KeyboardButton("✋ Хватит"),
+        KeyboardButton("💰 Удвоить"),
+        KeyboardButton("🔙 Назад")
+    )
+    return markup
+
+user_blackjack_games = {}
 user_reply_mode = {}
 user_unban_mode = {}
 user_bet_mode = {}
@@ -1205,7 +1256,9 @@ if bot:
 
             welcome_text = (
                 "🎰 Добро пожаловать в KVZDR HUB! 🎰\n\n"
-                "Для запуска казино используйте /casino\n"
+                "Доступные игры:\n"
+                "• /casino - игровые автоматы\n" 
+                "• /blackjack - карточная игра 21\n\n"
                 f"Ваш текущий баланс: {get_user_balance(user_id)} монет\n"
                 "Пополнить баланс можно через промокоды\n\n"
                 "📨 Связь с kvazador:\n"
@@ -1216,7 +1269,8 @@ if bot:
                 "Активируйте его через /promo ПРОМОКОД\n"
                 "Каждый полученный промокод можно использовать только 1 раз!\n\n"
                 "Доступные команды:\n"
-                "/casino - играть в казино\n"
+                "/casino - игровые автоматы\n"
+                "/blackjack - карточная игра\n" 
                 "/balance - проверить баланс\n"
                 "/top - топ игроков\n"
                 "/help - помощь"
@@ -1241,7 +1295,8 @@ if bot:
                     "Для пользователей:\n"
                     "/start - начать работу\n"
                     "/help - эта справка\n"
-                    "/casino - играть в казино\n"
+                    "/casino - игровые автоматы\n"
+                    "/blackjack - карточная игра 21\n"
                     "/balance - проверить баланс\n"
                     "/top - топ игроков\n"
                     "/promo [код] - активировать промокод\n"
@@ -1272,7 +1327,8 @@ if bot:
                     "Доступные команды:\n\n"
                     "/start - начать работу\n"
                     "/help - эта справка\n"
-                    "/casino - играть в казино\n"
+                    "/casino - игровые автоматы\n"
+                    "/blackjack - карточная игра 21\n"
                     "/balance - проверить баланс\n"
                     "/top - топ игроков\n"
                     "/promo [код] - активировать промокод\n"
@@ -1303,7 +1359,7 @@ if bot:
         except Exception as e:
             logger.error(f"Error in /balance: {e}")
 
-@bot.message_handler(commands=['top'])
+    @bot.message_handler(commands=['top'])
     def show_top(message):
         try:
             user_id = message.from_user.id
@@ -1322,13 +1378,11 @@ if bot:
             top_text = "🏆 ТОП-10 ИГРОКОВ ПО БАЛАНСУ 🏆\n\n"
             
             for i, user in enumerate(top_users, 1):
-                # ИСПРАВЛЕНО: используем другие имена переменных
                 top_user_id, username, first_name, last_name, balance = user
                 name = f"@{username}" if username else first_name
                 medal = "🥇" if i == 1 else "🥈" if i == 2 else "🥉" if i == 3 else f"{i}."
                 top_text += f"{medal} {name} - {balance:,} монет\n"
             
-            # ИСПРАВЛЕНО: отправляем оригинальному user_id
             bot.send_message(user_id, top_text)
             log_user_action(message.from_user, "просмотрел топ игроков")
             
@@ -1362,6 +1416,78 @@ if bot:
         except Exception as e:
             logger.error(f"Error in /casino: {e}")
 
+    @bot.message_handler(commands=['blackjack'])
+    def start_blackjack(message):
+        """Начало игры в блекджек"""
+        try:
+            user_id = message.from_user.id
+            
+            ban_info = is_banned(user_id)
+            if ban_info:
+                bot.send_message(user_id, "🚫 Вы забанены и не можете использовать эту команду")
+                return
+                
+            balance = get_user_balance(user_id)
+            if balance < 100:
+                bot.send_message(user_id, "❌ Для игры в блекджек нужно минимум 100 монет")
+                return
+            
+            user_blackjack_games[user_id] = {
+                'state': 'betting',
+                'balance': balance
+            }
+            
+            bot.send_message(
+                user_id,
+                f"♠️ BLACKJACK ♠️\n\n"
+                f"💰 Ваш баланс: {balance} монет\n\n"
+                "Выберите ставку:",
+                reply_markup=get_custom_bet_keyboard()
+            )
+            log_user_action(message.from_user, "начал блекджек")
+            
+        except Exception as e:
+            logger.error(f"Error in /blackjack: {e}")
+
+    # Обработка кнопки Blackjack в главном меню
+    @bot.message_handler(func=lambda message: message.text == "♠️ Играть в Blackjack")
+    def blackjack_button(message):
+        start_blackjack(message)
+
+    # Обработка кнопки запуска казино
+    @bot.message_handler(func=lambda message: message.text == "🎰 Запустить бурмалду")
+    def casino_button(message):
+        casino_start(message)
+
+    # Обработка кнопки запроса промокода
+    @bot.message_handler(func=lambda message: message.text == "🎁 Запросить промокод")
+    def request_promo_button(message):
+        try:
+            user_id = message.from_user.id
+            
+            ban_info = is_banned(user_id)
+            if ban_info:
+                bot.send_message(user_id, "🚫 Вы забанены и не можете использовать эту функцию")
+                return
+                
+            # Отправляем запрос всем админам
+            admins = get_all_admins()
+            user_info = f"@{message.from_user.username}" if message.from_user.username else message.from_user.first_name
+            
+            for admin in admins:
+                try:
+                    admin_id = admin[0]
+                    bot.send_message(admin_id, f"🎫 Пользователь {user_info} (ID: {user_id}) запросил промокод")
+                except Exception as e:
+                    logger.error(f"Failed to notify admin {admin[0]} about promo request: {e}")
+                    
+            bot.send_message(user_id, "✅ Ваш запрос на промокод отправлен администраторам. Ожидайте создания промокода.")
+            log_user_action(message.from_user, "request_promo")
+            
+        except Exception as e:
+            logger.error(f"Error in promo button: {e}")
+
+    # Обработка ставок для казино
     @bot.message_handler(func=lambda message: message.text in ["100", "500", "1000", "Всё", "✏️ Ввести свою ставку", "🔙 Назад"] and user_bet_mode.get(message.from_user.id))
     def handle_bet_selection(message):
         try:
@@ -1440,7 +1566,7 @@ if bot:
             user_bet_mode[user_id] = False
             user_custom_bet_mode[user_id] = False
 
-    # Обработчик ручного ввода ставки
+    # Обработчик ручного ввода ставки для казино
     @bot.message_handler(func=lambda message: user_custom_bet_mode.get(message.from_user.id) and message.text.isdigit())
     def handle_custom_bet(message):
         try:
@@ -1503,6 +1629,342 @@ if bot:
             bot.send_message(user_id, "❌ Ошибка при запуске слотов", reply_markup=get_main_keyboard())
             user_bet_mode[user_id] = False
             user_custom_bet_mode[user_id] = False
+
+    # Обработка ставок для блекджека
+    @bot.message_handler(func=lambda message: user_blackjack_games.get(message.from_user.id, {}).get('state') == 'betting')
+    def handle_blackjack_bet(message):
+        """Обработка ставки в блекджеке"""
+        try:
+            user_id = message.from_user.id
+            game_data = user_blackjack_games[user_id]
+            
+            if message.text == "🔙 Назад":
+                del user_blackjack_games[user_id]
+                bot.send_message(user_id, "✅ Возвращаемся в главное меню", reply_markup=get_main_keyboard())
+                return
+            
+            if message.text == "✏️ Ввести свою ставку":
+                bot.send_message(user_id, 
+                               "💵 Введите свою ставку (число):\n\n"
+                               "Минимальная ставка: 100 монет\n"
+                               "Максимальная ставка: ваш текущий баланс",
+                               reply_markup=ReplyKeyboardRemove())
+                return
+            
+            balance = game_data['balance']
+            
+            if message.text == "Всё":
+                bet_amount = balance
+            else:
+                try:
+                    bet_amount = int(message.text)
+                except ValueError:
+                    bot.send_message(user_id, "❌ Введите корректное число", reply_markup=get_custom_bet_keyboard())
+                    return
+            
+            if bet_amount > balance:
+                bot.send_message(user_id, f"❌ Недостаточно средств! Ваш баланс: {balance} монет", reply_markup=get_custom_bet_keyboard())
+                return
+                
+            if bet_amount < 100:
+                bot.send_message(user_id, "❌ Минимальная ставка: 100 монет", reply_markup=get_custom_bet_keyboard())
+                return
+            
+            # Создаем новую игру
+            deck = create_deck()
+            player_hand = [deck.pop(), deck.pop()]
+            dealer_hand = [deck.pop(), deck.pop()]
+            
+            user_blackjack_games[user_id] = {
+                'state': 'playing',
+                'deck': deck,
+                'player_hand': player_hand,
+                'dealer_hand': dealer_hand,
+                'bet': bet_amount,
+                'balance': balance
+            }
+            
+            # Проверяем блекджек у игрока
+            player_value = calculate_hand_value(player_hand)
+            
+            if player_value == 21:
+                # Блекджек! Выигрыш 3:2
+                win_amount = int(bet_amount * 2.5)
+                new_balance = balance + win_amount
+                update_user_balance(user_id, new_balance)
+                
+                result_text = (
+                    f"🎉 BLACKJACK! 🎉\n\n"
+                    f"👤 Ваша рука: {format_hand(player_hand)} = {player_value}\n"
+                    f"💼 Рука дилера: {format_hand(dealer_hand)} = {calculate_hand_value(dealer_hand)}\n\n"
+                    f"💰 Выигрыш: {win_amount} монет (3:2)\n"
+                    f"💎 Новый баланс: {new_balance} монет"
+                )
+                
+                bot.send_message(user_id, result_text, reply_markup=get_main_keyboard())
+                del user_blackjack_games[user_id]
+                log_user_action(message.from_user, f"blackjack выигрыш {win_amount}")
+            else:
+                # Продолжаем игру
+                game_text = (
+                    f"♠️ BLACKJACK ♠️\n\n"
+                    f"💵 Ставка: {bet_amount} монет\n\n"
+                    f"👤 Ваша рука: {format_hand(player_hand)} = {player_value}\n"
+                    f"💼 Рука дилера: {format_hand(dealer_hand, hide_dealer=True)}\n\n"
+                    f"Выберите действие:"
+                )
+                
+                bot.send_message(user_id, game_text, reply_markup=get_blackjack_keyboard())
+                
+        except Exception as e:
+            logger.error(f"Error in blackjack bet: {e}")
+            bot.send_message(user_id, "❌ Ошибка в игре", reply_markup=get_main_keyboard())
+            if user_id in user_blackjack_games:
+                del user_blackjack_games[user_id]
+
+    # Обработка ручного ввода ставки для блекджека
+    @bot.message_handler(func=lambda message: user_blackjack_games.get(message.from_user.id, {}).get('state') == 'betting' and message.text.isdigit())
+    def handle_blackjack_custom_bet(message):
+        """Обработка ручного ввода ставки в блекджеке"""
+        try:
+            user_id = message.from_user.id
+            game_data = user_blackjack_games[user_id]
+            balance = game_data['balance']
+            
+            try:
+                bet_amount = int(message.text)
+            except ValueError:
+                bot.send_message(user_id, "❌ Введите корректное число", reply_markup=get_custom_bet_keyboard())
+                return
+            
+            if bet_amount > balance:
+                bot.send_message(user_id, f"❌ Недостаточно средств! Ваш баланс: {balance} монет", reply_markup=get_custom_bet_keyboard())
+                return
+                
+            if bet_amount < 100:
+                bot.send_message(user_id, "❌ Минимальная ставка: 100 монет", reply_markup=get_custom_bet_keyboard())
+                return
+            
+            # Создаем новую игру
+            deck = create_deck()
+            player_hand = [deck.pop(), deck.pop()]
+            dealer_hand = [deck.pop(), deck.pop()]
+            
+            user_blackjack_games[user_id] = {
+                'state': 'playing',
+                'deck': deck,
+                'player_hand': player_hand,
+                'dealer_hand': dealer_hand,
+                'bet': bet_amount,
+                'balance': balance
+            }
+            
+            # Проверяем блекджек у игрока
+            player_value = calculate_hand_value(player_hand)
+            
+            if player_value == 21:
+                # Блекджек! Выигрыш 3:2
+                win_amount = int(bet_amount * 2.5)
+                new_balance = balance + win_amount
+                update_user_balance(user_id, new_balance)
+                
+                result_text = (
+                    f"🎉 BLACKJACK! 🎉\n\n"
+                    f"👤 Ваша рука: {format_hand(player_hand)} = {player_value}\n"
+                    f"💼 Рука дилера: {format_hand(dealer_hand)} = {calculate_hand_value(dealer_hand)}\n\n"
+                    f"💰 Выигрыш: {win_amount} монет (3:2)\n"
+                    f"💎 Новый баланс: {new_balance} монет"
+                )
+                
+                bot.send_message(user_id, result_text, reply_markup=get_main_keyboard())
+                del user_blackjack_games[user_id]
+                log_user_action(message.from_user, f"blackjack выигрыш {win_amount}")
+            else:
+                # Продолжаем игру
+                game_text = (
+                    f"♠️ BLACKJACK ♠️\n\n"
+                    f"💵 Ставка: {bet_amount} монет\n\n"
+                    f"👤 Ваша рука: {format_hand(player_hand)} = {player_value}\n"
+                    f"💼 Рука дилера: {format_hand(dealer_hand, hide_dealer=True)}\n\n"
+                    f"Выберите действие:"
+                )
+                
+                bot.send_message(user_id, game_text, reply_markup=get_blackjack_keyboard())
+                
+        except Exception as e:
+            logger.error(f"Error in blackjack custom bet: {e}")
+            bot.send_message(user_id, "❌ Ошибка в игре", reply_markup=get_main_keyboard())
+            if user_id in user_blackjack_games:
+                del user_blackjack_games[user_id]
+
+    # Обработка действий в блекджеке
+    @bot.message_handler(func=lambda message: user_blackjack_games.get(message.from_user.id, {}).get('state') == 'playing')
+    def handle_blackjack_action(message):
+        """Обработка действий игрока в блекджеке"""
+        try:
+            user_id = message.from_user.id
+            game_data = user_blackjack_games[user_id]
+            
+            if message.text == "🔙 Назад":
+                # Возвращаем ставку при выходе
+                bot.send_message(user_id, "✅ Игра отменена. Возвращаемся в главное меню", reply_markup=get_main_keyboard())
+                del user_blackjack_games[user_id]
+                return
+            
+            player_hand = game_data['player_hand']
+            dealer_hand = game_data['dealer_hand']
+            deck = game_data['deck']
+            bet_amount = game_data['bet']
+            balance = game_data['balance']
+            
+            if message.text == "⬆️ Еще карту":
+                # Игрок берет карту
+                player_hand.append(deck.pop())
+                player_value = calculate_hand_value(player_hand)
+                
+                if player_value > 21:
+                    # Перебор - игрок проиграл
+                    new_balance = balance - bet_amount
+                    update_user_balance(user_id, new_balance)
+                    
+                    result_text = (
+                        f"💥 ПЕРЕБОР! 💥\n\n"
+                        f"👤 Ваша рука: {format_hand(player_hand)} = {player_value}\n"
+                        f"💼 Рука дилера: {format_hand(dealer_hand)} = {calculate_hand_value(dealer_hand)}\n\n"
+                        f"💵 Проигрыш: {bet_amount} монет\n"
+                        f"💎 Новый баланс: {new_balance} монет"
+                    )
+                    
+                    bot.send_message(user_id, result_text, reply_markup=get_main_keyboard())
+                    del user_blackjack_games[user_id]
+                    log_user_action(message.from_user, f"blackjack проигрыш {bet_amount}")
+                else:
+                    # Продолжаем игру
+                    game_text = (
+                        f"♠️ BLACKJACK ♠️\n\n"
+                        f"💵 Ставка: {bet_amount} монет\n\n"
+                        f"👤 Ваша рука: {format_hand(player_hand)} = {player_value}\n"
+                        f"💼 Рука дилера: {format_hand(dealer_hand, hide_dealer=True)}\n\n"
+                        f"Выберите действие:"
+                    )
+                    
+                    user_blackjack_games[user_id]['player_hand'] = player_hand
+                    bot.send_message(user_id, game_text, reply_markup=get_blackjack_keyboard())
+                    
+            elif message.text == "✋ Хватит":
+                # Ход дилера
+                dealer_value = calculate_hand_value(dealer_hand)
+                
+                # Дилер берет карты пока не наберет 17 или больше
+                while dealer_value < 17:
+                    dealer_hand.append(deck.pop())
+                    dealer_value = calculate_hand_value(dealer_hand)
+                
+                player_value = calculate_hand_value(player_hand)
+                
+                # Определяем результат
+                if dealer_value > 21:
+                    # Дилер перебрал - игрок выиграл
+                    win_amount = bet_amount
+                    new_balance = balance + win_amount
+                    result = "🎉 ВЫ ВЫИГРАЛИ! Дилер перебрал!"
+                elif dealer_value > player_value:
+                    # Дилер выиграл
+                    win_amount = -bet_amount
+                    new_balance = balance - bet_amount
+                    result = "😞 ВЫ ПРОИГРАЛИ"
+                elif dealer_value < player_value:
+                    # Игрок выиграл
+                    win_amount = bet_amount
+                    new_balance = balance + win_amount
+                    result = "🎉 ВЫ ВЫИГРАЛИ!"
+                else:
+                    # Ничья
+                    win_amount = 0
+                    new_balance = balance
+                    result = "🤝 НИЧЬЯ"
+                
+                update_user_balance(user_id, new_balance)
+                
+                result_text = (
+                    f"{result}\n\n"
+                    f"👤 Ваша рука: {format_hand(player_hand)} = {player_value}\n"
+                    f"💼 Рука дилера: {format_hand(dealer_hand)} = {dealer_value}\n\n"
+                )
+                
+                if win_amount > 0:
+                    result_text += f"💰 Выигрыш: {win_amount} монет\n"
+                elif win_amount < 0:
+                    result_text += f"💵 Проигрыш: {bet_amount} монет\n"
+                else:
+                    result_text += "💰 Ставка возвращена\n"
+                    
+                result_text += f"💎 Новый баланс: {new_balance} монет"
+                
+                bot.send_message(user_id, result_text, reply_markup=get_main_keyboard())
+                del user_blackjack_games[user_id]
+                log_user_action(message.from_user, f"blackjack результат: {result}")
+                
+            elif message.text == "💰 Удвоить":
+                # Удвоение ставки
+                if balance >= bet_amount * 2:
+                    bet_amount *= 2
+                    # Игрок берет одну карту и останавливается
+                    player_hand.append(deck.pop())
+                    player_value = calculate_hand_value(player_hand)
+                    
+                    # Ход дилера
+                    dealer_value = calculate_hand_value(dealer_hand)
+                    while dealer_value < 17:
+                        dealer_hand.append(deck.pop())
+                        dealer_value = calculate_hand_value(dealer_hand)
+                    
+                    # Определяем результат
+                    if player_value > 21:
+                        result = "💥 ПЕРЕБОР!"
+                        win_amount = -bet_amount
+                    elif dealer_value > 21:
+                        result = "🎉 ВЫ ВЫИГРАЛИ! Дилер перебрал!"
+                        win_amount = bet_amount
+                    elif dealer_value > player_value:
+                        result = "😞 ВЫ ПРОИГРАЛИ"
+                        win_amount = -bet_amount
+                    elif dealer_value < player_value:
+                        result = "🎉 ВЫ ВЫИГРАЛИ!"
+                        win_amount = bet_amount
+                    else:
+                        result = "🤝 НИЧЬЯ"
+                        win_amount = 0
+                    
+                    new_balance = balance + win_amount
+                    update_user_balance(user_id, new_balance)
+                    
+                    result_text = (
+                        f"{result} (Удвоение)\n\n"
+                        f"👤 Ваша рука: {format_hand(player_hand)} = {player_value}\n"
+                        f"💼 Рука дилера: {format_hand(dealer_hand)} = {dealer_value}\n\n"
+                    )
+                    
+                    if win_amount > 0:
+                        result_text += f"💰 Выигрыш: {win_amount} монет\n"
+                    elif win_amount < 0:
+                        result_text += f"💵 Проигрыш: {bet_amount} монет\n"
+                    else:
+                        result_text += "💰 Ставка возвращена\n"
+                        
+                    result_text += f"💎 Новый баланс: {new_balance} монет"
+                    
+                    bot.send_message(user_id, result_text, reply_markup=get_main_keyboard())
+                    del user_blackjack_games[user_id]
+                    log_user_action(message.from_user, f"blackjack удвоение: {result}")
+                else:
+                    bot.send_message(user_id, "❌ Недостаточно средств для удвоения!", reply_markup=get_blackjack_keyboard())
+                    
+        except Exception as e:
+            logger.error(f"Error in blackjack action: {e}")
+            bot.send_message(user_id, "❌ Ошибка в игре", reply_markup=get_main_keyboard())
+            if user_id in user_blackjack_games:
+                del user_blackjack_games[user_id]
 
     @bot.message_handler(commands=['promo'])
     def use_promo(message):
@@ -2046,7 +2508,7 @@ if bot:
     @bot.message_handler(commands=['users'])
     def users_command(message):
         try:
-            admin_id = message.from_user.id  # ⚠️ ИСПРАВЛЕНО: переименовали переменную
+            admin_id = message.from_user.id
             
             if not is_admin(admin_id):
                 bot.send_message(admin_id, "❌ У вас нет прав для этой команды")
@@ -2059,26 +2521,26 @@ if bot:
                 
             users_text = f"📊 Всего пользователей: {len(users)}\n\n"
             for i, user in enumerate(users[:50], 1):
-                user_id, username, first_name, last_name = user  # ⚠️ Теперь это другая переменная
+                user_id, username, first_name, last_name = user
                 name = f"{first_name} {last_name}" if last_name else first_name
                 users_text += f"{i}. {name} (@{username}) - {user_id}\n"
                 
             if len(users) > 50:
                 users_text += f"\n... и еще {len(users) - 50} пользователей"
                 
-            bot.send_message(admin_id, users_text)  # ⚠️ Используем admin_id
+            bot.send_message(admin_id, users_text)
             log_admin_action(message.from_user, "просмотрел список пользователей")
             
         except Exception as e:
             logger.error(f"Error in /users: {e}")
-        
+
     @bot.message_handler(commands=['admins'])
     def admins_command(message):
         try:
-            user_id = message.from_user.id
+            current_user_id = message.from_user.id
             
-            if not is_admin(user_id):
-                bot.send_message(user_id, "❌ У вас нет прав для этой команды")
+            if not is_admin(current_user_id):
+                bot.send_message(current_user_id, "❌ У вас нет прав для этой команды")
                 return
                 
             admins = get_all_admins()
@@ -2089,7 +2551,7 @@ if bot:
                 role = "Главный" if is_main else "Обычный"
                 admins_text += f"{first_name} (@{username}) - {admin_id} - {role}\n"
                 
-            bot.send_message(user_id, admins_text)
+            bot.send_message(current_user_id, admins_text)
             log_admin_action(message.from_user, "просмотрел список администраторов")
             
         except Exception as e:
@@ -2169,38 +2631,6 @@ if bot:
         except Exception as e:
             logger.error(f"Error in /clearlogs: {e}")
 
-    # Обработка кнопок главного меню
-    @bot.message_handler(func=lambda message: message.text == "🎰 Запустить бурмалду")
-    def start_casino_button(message):
-        casino_start(message)
-
-    @bot.message_handler(func=lambda message: message.text == "🎁 Запросить промокод")
-    def request_promo_button(message):
-        try:
-            user_id = message.from_user.id
-            
-            ban_info = is_banned(user_id)
-            if ban_info:
-                bot.send_message(user_id, "🚫 Вы забанены и не можете использовать эту функцию")
-                return
-                
-            # Отправляем запрос всем админам
-            admins = get_all_admins()
-            user_info = f"@{message.from_user.username}" if message.from_user.username else message.from_user.first_name
-            
-            for admin in admins:
-                try:
-                    admin_id = admin[0]
-                    bot.send_message(admin_id, f"🎫 Пользователь {user_info} (ID: {user_id}) запросил промокод")
-                except Exception as e:
-                    logger.error(f"Failed to notify admin {admin[0]} about promo request: {e}")
-                    
-            bot.send_message(user_id, "✅ Ваш запрос на промокод отправлен администраторам. Ожидайте создания промокода.")
-            log_user_action(message.from_user, "request_promo")
-            
-        except Exception as e:
-            logger.error(f"Error in promo button: {e}")
-
     # Обработка callback кнопок
     @bot.callback_query_handler(func=lambda call: True)
     def handle_callback(call):
@@ -2254,7 +2684,7 @@ if bot:
             user_id = message.from_user.id
             
             # Пропускаем сообщения в специальных режимах
-            if user_id in user_reply_mode or user_id in user_bet_mode or user_id in user_custom_bet_mode:
+            if user_id in user_reply_mode or user_id in user_bet_mode or user_id in user_custom_bet_mode or user_id in user_blackjack_games:
                 return
                 
             ban_info = is_banned(user_id)
@@ -2323,7 +2753,7 @@ if bot:
             user_id = message.from_user.id
             
             # Игнорируем сообщения в режимах ответа
-            if user_id in user_reply_mode or user_id in user_bet_mode or user_id in user_custom_bet_mode:
+            if user_id in user_reply_mode or user_id in user_bet_mode or user_id in user_custom_bet_mode or user_id in user_blackjack_games:
                 return
                 
             # Проверяем, начинается ли сообщение с команды
