@@ -739,6 +739,37 @@ def get_top_users(limit=10):
     
     return safe_db_execute(_get_top)
 
+def get_db_size():
+    """Возвращает размер базы данных"""
+    def _get_size():
+        conn = get_db_connection()
+        c = conn.cursor()
+        
+        # Получаем размер всех таблиц
+        c.execute('''
+            SELECT 
+                table_name,
+                pg_size_pretty(pg_total_relation_size(quote_ident(table_name))) as size
+            FROM information_schema.tables
+            WHERE table_schema = 'public'
+            ORDER BY pg_total_relation_size(quote_ident(table_name)) DESC
+        ''')
+        
+        tables = c.fetchall()
+        
+        # Получаем общий размер БД
+        c.execute("SELECT pg_size_pretty(pg_database_size(current_database()))")
+        total_size = c.fetchone()[0]
+        
+        conn.close()
+        
+        return {
+            'tables': tables,
+            'total_size': total_size
+        }
+    
+    return safe_db_execute(_get_size)
+
 # ==================== СИСТЕМА БАНОВ ====================
 
 def ban_user(user_id, ban_type, duration_seconds=None, reason="", banned_by=None):
@@ -992,6 +1023,19 @@ def get_bet_keyboard():
     )
     return markup
 
+def get_custom_bet_keyboard():
+    """Клавиатура для ручного ввода ставки"""
+    markup = ReplyKeyboardMarkup(resize_keyboard=True, row_width=3)
+    markup.add(
+        KeyboardButton("100"),
+        KeyboardButton("500"), 
+        KeyboardButton("1000"),
+        KeyboardButton("Всё"),
+        KeyboardButton("✏️ Ввести свою ставку"),
+        KeyboardButton("🔙 Назад")
+    )
+    return markup
+
 def get_main_keyboard():
     """Главная клавиатура меню"""
     markup = ReplyKeyboardMarkup(resize_keyboard=True)
@@ -1134,6 +1178,7 @@ def spin_slots_animation(bot, chat_id, bet_amount):
 user_reply_mode = {}
 user_unban_mode = {}
 user_bet_mode = {}
+user_custom_bet_mode = {}
 
 # ----------------------------
 # ХЭНДЛЕРЫ БОТА - ВСЕ КОМАНДЫ
@@ -1219,7 +1264,8 @@ if bot:
                     "/users - список пользователей\n"
                     "/admins - список админов\n"
                     "/stats - статистика\n"
-                    "/clearlogs - очистить логи"
+                    "/clearlogs - очистить логи\n"
+                    "/db - статистика БД"
                 )
             else:
                 help_text = (
@@ -1307,21 +1353,31 @@ if bot:
                 user_id,
                 f"💰 Ваш баланс: {balance} монет\n\n"
                 "Выберите ставку:",
-                reply_markup=get_bet_keyboard()
+                reply_markup=get_custom_bet_keyboard()
             )
             log_user_action(message.from_user, "запустил казино")
             
         except Exception as e:
             logger.error(f"Error in /casino: {e}")
 
-    @bot.message_handler(func=lambda message: message.text in ["100", "500", "1000", "Всё", "🔙 Назад"] and user_bet_mode.get(message.from_user.id))
+    @bot.message_handler(func=lambda message: message.text in ["100", "500", "1000", "Всё", "✏️ Ввести свою ставку", "🔙 Назад"] and user_bet_mode.get(message.from_user.id))
     def handle_bet_selection(message):
         try:
             user_id = message.from_user.id
             
             if message.text == "🔙 Назад":
                 user_bet_mode[user_id] = False
+                user_custom_bet_mode[user_id] = False
                 bot.send_message(user_id, "✅ Возвращаемся в главное меню", reply_markup=get_main_keyboard())
+                return
+            
+            if message.text == "✏️ Ввести свою ставку":
+                user_custom_bet_mode[user_id] = True
+                bot.send_message(user_id, 
+                               "💵 Введите свою ставку (число):\n\n"
+                               "Минимальная ставка: 100 монет\n"
+                               "Максимальная ставка: ваш текущий баланс",
+                               reply_markup=ReplyKeyboardRemove())
                 return
             
             balance = get_user_balance(user_id)
@@ -1332,11 +1388,11 @@ if bot:
                 bet_amount = int(message.text)
             
             if bet_amount > balance:
-                bot.send_message(user_id, f"❌ Недостаточно средств! Ваш баланс: {balance} монет")
+                bot.send_message(user_id, f"❌ Недостаточно средств! Ваш баланс: {balance} монет", reply_markup=get_custom_bet_keyboard())
                 return
                 
             if bet_amount < 100:
-                bot.send_message(user_id, "❌ Минимальная ставка: 100 монет")
+                bot.send_message(user_id, "❌ Минимальная ставка: 100 монет", reply_markup=get_custom_bet_keyboard())
                 return
             
             # Запускаем анимацию слотов
@@ -1372,6 +1428,7 @@ if bot:
             # ВОЗВРАЩАЕМ ГЛАВНОЕ МЕНЮ после результата
             bot.send_message(user_id, result_text, reply_markup=get_main_keyboard())
             user_bet_mode[user_id] = False  # Выходим из режима выбора ставки
+            user_custom_bet_mode[user_id] = False
             
             log_user_action(message.from_user, f"сыграл в казино: ставка {bet_amount}, выигрыш {total_win}")
             
@@ -1379,6 +1436,71 @@ if bot:
             logger.error(f"Error in bet selection: {e}")
             bot.send_message(user_id, "❌ Ошибка при запуске слотов", reply_markup=get_main_keyboard())
             user_bet_mode[user_id] = False
+            user_custom_bet_mode[user_id] = False
+
+    # Обработчик ручного ввода ставки
+    @bot.message_handler(func=lambda message: user_custom_bet_mode.get(message.from_user.id) and message.text.isdigit())
+    def handle_custom_bet(message):
+        try:
+            user_id = message.from_user.id
+            balance = get_user_balance(user_id)
+            
+            try:
+                bet_amount = int(message.text)
+            except ValueError:
+                bot.send_message(user_id, "❌ Введите корректное число", reply_markup=get_custom_bet_keyboard())
+                return
+            
+            if bet_amount > balance:
+                bot.send_message(user_id, f"❌ Недостаточно средств! Ваш баланс: {balance} монет", reply_markup=get_custom_bet_keyboard())
+                return
+                
+            if bet_amount < 100:
+                bot.send_message(user_id, "❌ Минимальная ставка: 100 монет", reply_markup=get_custom_bet_keyboard())
+                return
+            
+            # Запускаем анимацию слотов
+            final_result = spin_slots_animation(bot, user_id, bet_amount)
+            
+            # Проверяем выигрышные линии
+            all_lines = check_all_lines(final_result)
+            total_win, winning_lines = calculate_win(all_lines, bet_amount)
+            
+            balance = get_user_balance(user_id)
+            
+            if total_win > 0:
+                # Выигрыш
+                new_balance = balance - bet_amount + total_win
+                update_user_balance(user_id, new_balance)
+                
+                result_text = f"🎉 ВЫ ВЫИГРАЛИ! 🎉\n\n"
+                result_text += f"💵 Ставка: {bet_amount} монет\n"
+                result_text += f"💰 Выигрыш: {total_win} монет\n"
+                result_text += f"💎 Новый баланс: {new_balance} монет\n\n"
+                result_text += "🏆 Выигрышные линии:\n" + "\n".join(winning_lines)
+                
+            else:
+                # Проигрыш
+                new_balance = balance - bet_amount
+                update_user_balance(user_id, new_balance)
+                
+                result_text = f"😞 ВЫ ПРОИГРАЛИ\n\n"
+                result_text += f"💵 Ставка: {bet_amount} монет\n"
+                result_text += f"💎 Новый баланс: {new_balance} монет\n"
+                result_text += "❌ Выигрышных линий нет"
+            
+            # ВОЗВРАЩАЕМ ГЛАВНОЕ МЕНЮ после результата
+            bot.send_message(user_id, result_text, reply_markup=get_main_keyboard())
+            user_bet_mode[user_id] = False
+            user_custom_bet_mode[user_id] = False
+            
+            log_user_action(message.from_user, f"сыграл в казино: ставка {bet_amount}, выигрыш {total_win}")
+            
+        except Exception as e:
+            logger.error(f"Error in custom bet: {e}")
+            bot.send_message(user_id, "❌ Ошибка при запуске слотов", reply_markup=get_main_keyboard())
+            user_bet_mode[user_id] = False
+            user_custom_bet_mode[user_id] = False
 
     @bot.message_handler(commands=['promo'])
     def use_promo(message):
@@ -1500,7 +1622,8 @@ if bot:
                 "/stats - статистика промокодов\n\n"
                 "Логи и статистика:\n"
                 "/adminlogs [дни] - логи админов\n"
-                "/clearlogs - очистить логи\n\n"
+                "/clearlogs - очистить логи\n"
+                "/db - статистика БД\n\n"
                 "Управление админами:\n"
                 "/addadmin [id] - добавить админа\n"
                 "/removeadmin [id] - удалить админа\n"
@@ -1538,7 +1661,7 @@ if bot:
                            f"💬 Режим ответа включен для пользователя {target_id}\n"
                            f"Отправьте сообщение, которое будет переслано пользователю.\n"
                            f"Для выхода из режима используйте /stop")
-            log_admin_action(message.from_user, f"включил режим ответа для пользователя {target_id}")
+            # УБРАЛИ ЛОГИРОВАНИЕ ВКЛЮЧЕНИЯ РЕЖИМА ОТВЕТА
             
         except Exception as e:
             logger.error(f"Error in /reply: {e}")
@@ -1551,7 +1674,7 @@ if bot:
             if user_id in user_reply_mode:
                 target_id = user_reply_mode.pop(user_id)
                 bot.send_message(user_id, f"✅ Режим ответа отключен для пользователя {target_id}")
-                log_admin_action(message.from_user, f"отключил режим ответа")
+                # УБРАЛИ ЛОГИРОВАНИЕ ВЫКЛЮЧЕНИЯ РЕЖИМА ОТВЕТА
             else:
                 bot.send_message(user_id, "❌ Режим ответа не активен")
                 
@@ -1570,6 +1693,8 @@ if bot:
                 if message.content_type == 'text':
                     bot.send_message(target_id, f"📨 Ответ от администратора:\n\n{message.text}")
                     bot.send_message(admin_id, f"✅ Ответ отправлен пользователю {target_id}")
+                    # ЛОГИРУЕМ ТОЛЬКО САМ ОТВЕТ
+                    log_admin_action(message.from_user, f"ответил {target_id} - {message.text}")
                 else:
                     # Для медиа-сообщений
                     caption = "📨 Ответ от администратора"
@@ -1588,9 +1713,10 @@ if bot:
                         bot.send_voice(target_id, message.voice.file_id, caption=caption)
                     
                     bot.send_message(admin_id, f"✅ Медиа-ответ отправлен пользователю {target_id}")
+                    # ЛОГИРУЕМ ТОЛЬКО САМ ОТВЕТ
+                    media_type = message.content_type
+                    log_admin_action(message.from_user, f"ответил {target_id} - [{media_type}] {caption}")
                     
-                log_admin_action(message.from_user, f"отправил ответ пользователю {target_id}")
-                
             except Exception as e:
                 bot.send_message(admin_id, f"❌ Не удалось отправить сообщение пользователю {target_id}")
                 logger.error(f"Failed to send reply to {target_id}: {e}")
@@ -1995,6 +2121,31 @@ if bot:
         except Exception as e:
             logger.error(f"Error in /stats: {e}")
 
+    @bot.message_handler(commands=['db'])
+    def db_stats_command(message):
+        try:
+            user_id = message.from_user.id
+            
+            if not is_admin(user_id):
+                bot.send_message(user_id, "❌ У вас нет прав для этой команды")
+                return
+                
+            db_info = get_db_size()
+            
+            db_text = "🗃️ Статистика базы данных:\n\n"
+            db_text += f"📊 Общий размер: {db_info['total_size']}\n\n"
+            db_text += "📋 Размеры таблиц:\n"
+            
+            for table in db_info['tables']:
+                table_name, table_size = table
+                db_text += f"• {table_name}: {table_size}\n"
+                
+            bot.send_message(user_id, db_text)
+            log_admin_action(message.from_user, "просмотрел статистику БД")
+            
+        except Exception as e:
+            logger.error(f"Error in /db: {e}")
+
     @bot.message_handler(commands=['clearlogs'])
     def clear_logs_command(message):
         try:
@@ -2089,7 +2240,7 @@ if bot:
                     f"Отправьте сообщение, которое будет переслано пользователю.\n"
                     f"Для выхода из режима используйте /stop"
                 )
-                log_admin_action(call.from_user, f"включил режим ответа для {target_id} через кнопку")
+                # УБРАЛИ ЛОГИРОВАНИЕ ВКЛЮЧЕНИЯ РЕЖИМА ОТВЕТА ЧЕРЕЗ КНОПКУ
                 
         except Exception as e:
             logger.error(f"Error in callback handler: {e}")
@@ -2100,6 +2251,10 @@ if bot:
         try:
             user_id = message.from_user.id
             
+            # Пропускаем сообщения в специальных режимах
+            if user_id in user_reply_mode or user_id in user_bet_mode or user_id in user_custom_bet_mode:
+                return
+                
             ban_info = is_banned(user_id)
             if ban_info:
                 bot.send_message(user_id, "🚫 Вы забанены и не можете отправлять сообщения")
@@ -2166,7 +2321,7 @@ if bot:
             user_id = message.from_user.id
             
             # Игнорируем сообщения в режимах ответа
-            if user_id in user_reply_mode or user_id in user_bet_mode:
+            if user_id in user_reply_mode or user_id in user_bet_mode or user_id in user_custom_bet_mode:
                 return
                 
             # Проверяем, начинается ли сообщение с команды
