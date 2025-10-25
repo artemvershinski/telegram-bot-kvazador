@@ -11,7 +11,6 @@ from psycopg2.extras import RealDictCursor
 from collections import defaultdict
 import random
 import urllib.parse as urlparse
-import asyncio
 
 # ИМПОРТИРУЕМ request
 from flask import Flask, request
@@ -967,11 +966,9 @@ def get_bet_keyboard():
     """Клавиатура для выбора ставки"""
     markup = ReplyKeyboardMarkup(resize_keyboard=True, row_width=3)
     markup.add(
-        KeyboardButton("10"),
-        KeyboardButton("100"), 
+        KeyboardButton("100"),
         KeyboardButton("500"),
         KeyboardButton("1000"),
-        KeyboardButton("Фулл балик"),
         KeyboardButton("🔙 Назад")
     )
     return markup
@@ -1032,7 +1029,7 @@ def check_all_lines(result):
     
     return lines
 
-async def spin_slots_animation(bot, chat_id, bet_amount):
+def spin_slots_animation(bot, chat_id, bet_amount):
     """Анимация прокрутки слотов 3x3 с вертикальными линиями"""
     symbols = ["🍒", "🍋", "🍊", "🍇", "💎", "7️⃣"]
     
@@ -1058,11 +1055,14 @@ async def spin_slots_animation(bot, chat_id, bet_amount):
         ]
         
         grid_text = f"{''.join(display[0])}\n{''.join(display[1])}\n{''.join(display[2])}"
-        bot.edit_message_text(
-            f"🎰 КРУТИМ... 🎰\n{grid_text}",
-            chat_id=chat_id,
-            message_id=msg.message_id
-        )
+        try:
+            bot.edit_message_text(
+                f"🎰 КРУТИМ... 🎰\n{grid_text}",
+                chat_id=chat_id,
+                message_id=msg.message_id
+            )
+        except:
+            pass
         time.sleep(0.25)
     
     # Фаза 2: Остановка по вертикальным линиям (1.5 секунды)
@@ -1071,11 +1071,14 @@ async def spin_slots_animation(bot, chat_id, bet_amount):
         final_result[i][0] = random.choice(symbols)
     
     grid_text = f"{''.join(final_result[0])}\n{''.join(final_result[1])}\n{''.join(final_result[2])}"
-    bot.edit_message_text(
-        f"🎰 ОСТАНАВЛИВАЕМ... 🎰\n{grid_text}",
-        chat_id=chat_id,
-        message_id=msg.message_id
-    )
+    try:
+        bot.edit_message_text(
+            f"🎰 ОСТАНАВЛИВАЕМ... 🎰\n{grid_text}",
+            chat_id=chat_id,
+            message_id=msg.message_id
+        )
+    except:
+        pass
     time.sleep(0.5)
     
     # Останавливаем центральную вертикаль
@@ -1083,11 +1086,14 @@ async def spin_slots_animation(bot, chat_id, bet_amount):
         final_result[i][1] = random.choice(symbols)
     
     grid_text = f"{''.join(final_result[0])}\n{''.join(final_result[1])}\n{''.join(final_result[2])}"
-    bot.edit_message_text(
-        f"🎰 ОСТАНАВЛИВАЕМ... 🎰\n{grid_text}",
-        chat_id=chat_id,
-        message_id=msg.message_id
-    )
+    try:
+        bot.edit_message_text(
+            f"🎰 ОСТАНАВЛИВАЕМ... 🎰\n{grid_text}",
+            chat_id=chat_id,
+            message_id=msg.message_id
+        )
+    except:
+        pass
     time.sleep(0.5)
     
     # Останавливаем правую вертикаль (финальный результат)
@@ -1096,14 +1102,17 @@ async def spin_slots_animation(bot, chat_id, bet_amount):
     
     # Финальный результат
     grid_text = f"{''.join(final_result[0])}\n{''.join(final_result[1])}\n{''.join(final_result[2])}"
-    bot.edit_message_text(
-        f"🎰 РЕЗУЛЬТАТ 🎰\n{grid_text}",
-        chat_id=chat_id,
-        message_id=msg.message_id
-    )
+    try:
+        bot.edit_message_text(
+            f"🎰 РЕЗУЛЬТАТ 🎰\n{grid_text}",
+            chat_id=chat_id,
+            message_id=msg.message_id
+        )
+    except:
+        pass
     time.sleep(0.5)
     
-    return final_result, msg.message_id
+    return final_result
 
 user_reply_mode = {}
 user_unban_mode = {}
@@ -1239,8 +1248,8 @@ if bot:
                 return
                 
             balance = get_user_balance(user_id)
-            if balance < 10:
-                bot.send_message(user_id, "❌ Для игры в казино нужно минимум 10 монет")
+            if balance < 100:
+                bot.send_message(user_id, "❌ Для игры в казино нужно минимум 100 монет")
                 return
             
             user_bet_mode[user_id] = True
@@ -1255,7 +1264,7 @@ if bot:
         except Exception as e:
             logger.error(f"Error in /casino: {e}")
 
-    @bot.message_handler(func=lambda message: message.text in ["10", "100", "500", "1000", "Фулл балик", "🔙 Назад"] and user_bet_mode.get(message.from_user.id))
+    @bot.message_handler(func=lambda message: message.text in ["100", "500", "1000", "🔙 Назад"] and user_bet_mode.get(message.from_user.id))
     def handle_bet_selection(message):
         try:
             user_id = message.from_user.id
@@ -1269,22 +1278,18 @@ if bot:
                 return
             
             balance = get_user_balance(user_id)
-            
-            if message.text == "Фулл балик":
-                bet_amount = balance
-            else:
-                bet_amount = int(message.text)
+            bet_amount = int(message.text)
             
             if bet_amount > balance:
                 bot.send_message(user_id, f"❌ Недостаточно средств! Ваш баланс: {balance} монет")
                 return
                 
-            if bet_amount < 10:
-                bot.send_message(user_id, "❌ Минимальная ставка: 10 монет")
+            if bet_amount < 100:
+                bot.send_message(user_id, "❌ Минимальная ставка: 100 монет")
                 return
             
             # Запускаем анимацию слотов
-            final_result, message_id = spin_slots_animation(bot, user_id, bet_amount)
+            final_result = spin_slots_animation(bot, user_id, bet_amount)
             
             # Проверяем выигрышные линии
             all_lines = check_all_lines(final_result)
