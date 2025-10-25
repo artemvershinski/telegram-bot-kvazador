@@ -11,6 +11,7 @@ from psycopg2.extras import RealDictCursor
 from collections import defaultdict
 import random
 import urllib.parse as urlparse
+import asyncio
 
 # ИМПОРТИРУЕМ request
 from flask import Flask, request
@@ -480,10 +481,6 @@ def get_admin_logs(admin_id=None, days=30):
 user_last_message_time = {}
 MESSAGE_COOLDOWN = 5  # секунд
 
-# Ограничение для кнопки (30 секунд)
-button_cooldown_users = {}
-BUTTON_COOLDOWN = 30  # секунд
-
 def check_cooldown(user_id):
     """Проверяет кулдаун и возвращает оставшееся время"""
     current_time = time.time()
@@ -495,31 +492,6 @@ def check_cooldown(user_id):
     
     user_last_message_time[user_id] = current_time
     return 0
-
-def check_button_cooldown(user_id):
-    """Проверяет кулдаун для кнопки и возвращает оставшееся время"""
-    current_time = time.time()
-    last_time = button_cooldown_users.get(user_id, 0)
-    
-    time_passed = current_time - last_time
-    if time_passed < BUTTON_COOLDOWN:
-        return BUTTON_COOLDOWN - time_passed
-    
-    button_cooldown_users[user_id] = current_time
-    return 0
-
-def restore_button(user_id):
-    """Восстанавливает кнопку через 30 секунд"""
-    def _restore():
-        time.sleep(BUTTON_COOLDOWN)
-        try:
-            markup = ReplyKeyboardMarkup(resize_keyboard=True)
-            markup.add(KeyboardButton("📞 Попросить связаться со мной."))
-            bot.send_message(user_id, "✅ Кнопка запроса связи снова доступна!", reply_markup=markup)
-        except Exception as e:
-            logger.error(f"Failed to restore button for user {user_id}: {e}")
-    
-    Thread(target=_restore, daemon=True).start()
 
 # ----------------------------
 # Flask keep-alive
@@ -989,8 +961,153 @@ def get_promocode_stats():
     
     return safe_db_execute(_get_stats)
 
+# ==================== СИСТЕМА КАЗИНО И АНИМАЦИЯ СЛОТОВ ====================
+
+def get_bet_keyboard():
+    """Клавиатура для выбора ставки"""
+    markup = ReplyKeyboardMarkup(resize_keyboard=True, row_width=3)
+    markup.add(
+        KeyboardButton("10"),
+        KeyboardButton("100"), 
+        KeyboardButton("500"),
+        KeyboardButton("1000"),
+        KeyboardButton("Фулл балик"),
+        KeyboardButton("🔙 Назад")
+    )
+    return markup
+
+def calculate_win(lines, bet):
+    """Рассчитывает выигрыш по линиям"""
+    total_win = 0
+    winning_lines = []
+    
+    # Коэффициенты для разных комбинаций
+    multipliers = {
+        "🍒": {"3": 3, "2": 1},
+        "🍋": {"3": 4, "2": 2}, 
+        "🍊": {"3": 5, "2": 2},
+        "🍇": {"3": 6, "2": 3},
+        "💎": {"3": 10, "2": 5},
+        "7️⃣": {"3": 20, "2": 10}
+    }
+    
+    for i, line in enumerate(lines, 1):
+        symbols = line
+        
+        # Проверяем комбинации
+        if symbols[0] == symbols[1] == symbols[2]:  # 3 одинаковых
+            symbol = symbols[0]
+            if symbol in multipliers:
+                win_amount = bet * multipliers[symbol]["3"]
+                total_win += win_amount
+                winning_lines.append(f"Линия {i}: {symbol*3} x{multipliers[symbol]['3']} = {win_amount}")
+        
+        # Проверяем 2 одинаковых (первые два)
+        elif symbols[0] == symbols[1]:
+            symbol = symbols[0]
+            if symbol in multipliers:
+                win_amount = bet * multipliers[symbol]["2"]
+                total_win += win_amount
+                winning_lines.append(f"Линия {i}: {symbol*2} x{multipliers[symbol]['2']} = {win_amount}")
+    
+    return total_win, winning_lines
+
+def check_all_lines(result):
+    """Проверяет все возможные линии выигрыша"""
+    lines = []
+    
+    # Горизонтальные линии
+    lines.append([result[0][0], result[0][1], result[0][2]])  # Верхняя
+    lines.append([result[1][0], result[1][1], result[1][2]])  # Средняя  
+    lines.append([result[2][0], result[2][1], result[2][2]])  # Нижняя
+    
+    # Вертикальные линии
+    lines.append([result[0][0], result[1][0], result[2][0]])  # Левая
+    lines.append([result[0][1], result[1][1], result[2][1]])  # Центральная
+    lines.append([result[0][2], result[1][2], result[2][2]])  # Правая
+    
+    # Диагональные линии
+    lines.append([result[0][0], result[1][1], result[2][2]])  # Главная диагональ
+    lines.append([result[0][2], result[1][1], result[2][0]])  # Побочная диагональ
+    
+    return lines
+
+async def spin_slots_animation(bot, chat_id, bet_amount):
+    """Анимация прокрутки слотов 3x3 с вертикальными линиями"""
+    symbols = ["🍒", "🍋", "🍊", "🍇", "💎", "7️⃣"]
+    
+    # Генерируем финальный результат
+    final_result = [
+        [random.choice(symbols) for _ in range(3)],
+        [random.choice(symbols) for _ in range(3)],
+        [random.choice(symbols) for _ in range(3)]
+    ]
+    
+    # Начальное сообщение
+    empty_grid = "⬜️⬜️⬜️\n⬜️⬜️⬜️\n⬜️⬜️⬜️"
+    msg = bot.send_message(chat_id, f"🎰 НАЧИНАЕМ... 🎰\n{empty_grid}")
+    
+    time.sleep(0.5)
+    
+    # Фаза 1: Быстрая прокрутка всех линий (1.5 секунды)
+    for frame in range(6):
+        display = [
+            [random.choice(symbols) for _ in range(3)],
+            [random.choice(symbols) for _ in range(3)],
+            [random.choice(symbols) for _ in range(3)]
+        ]
+        
+        grid_text = f"{''.join(display[0])}\n{''.join(display[1])}\n{''.join(display[2])}"
+        bot.edit_message_text(
+            f"🎰 КРУТИМ... 🎰\n{grid_text}",
+            chat_id=chat_id,
+            message_id=msg.message_id
+        )
+        time.sleep(0.25)
+    
+    # Фаза 2: Остановка по вертикальным линиям (1.5 секунды)
+    # Останавливаем левую вертикаль
+    for i in range(3):
+        final_result[i][0] = random.choice(symbols)
+    
+    grid_text = f"{''.join(final_result[0])}\n{''.join(final_result[1])}\n{''.join(final_result[2])}"
+    bot.edit_message_text(
+        f"🎰 ОСТАНАВЛИВАЕМ... 🎰\n{grid_text}",
+        chat_id=chat_id,
+        message_id=msg.message_id
+    )
+    time.sleep(0.5)
+    
+    # Останавливаем центральную вертикаль
+    for i in range(3):
+        final_result[i][1] = random.choice(symbols)
+    
+    grid_text = f"{''.join(final_result[0])}\n{''.join(final_result[1])}\n{''.join(final_result[2])}"
+    bot.edit_message_text(
+        f"🎰 ОСТАНАВЛИВАЕМ... 🎰\n{grid_text}",
+        chat_id=chat_id,
+        message_id=msg.message_id
+    )
+    time.sleep(0.5)
+    
+    # Останавливаем правую вертикаль (финальный результат)
+    for i in range(3):
+        final_result[i][2] = random.choice(symbols)
+    
+    # Финальный результат
+    grid_text = f"{''.join(final_result[0])}\n{''.join(final_result[1])}\n{''.join(final_result[2])}"
+    bot.edit_message_text(
+        f"🎰 РЕЗУЛЬТАТ 🎰\n{grid_text}",
+        chat_id=chat_id,
+        message_id=msg.message_id
+    )
+    time.sleep(0.5)
+    
+    return final_result, msg.message_id
+
 user_reply_mode = {}
 user_unban_mode = {}
+user_bet_mode = {}
 
 # ----------------------------
 # ХЭНДЛЕРЫ БОТА - ВСЕ КОМАНДЫ
@@ -1019,7 +1136,7 @@ if bot:
                 "🎰 Добро пожаловать в KVZDR HUB! 🎰\n\n"
                 "Это бот-пересыльщик сообщений для kvazador!\n\n"
                 "Виртуальная бурмалда:\n"
-                "Ваш текущий баланс: 0 монет\n"
+                f"Ваш текущий баланс: {get_user_balance(user_id)} монет\n"
                 "Пополнить баланс можно через промокоды\n"
                 "Для запроса промокода используйте /get_promo\n"
                 "Для запуска казино используйте /casino\n\n"
@@ -1033,7 +1150,6 @@ if bot:
             )
 
             markup = ReplyKeyboardMarkup(resize_keyboard=True)
-            markup.add(KeyboardButton("📞 Попросить связаться со мной."))
             markup.add(KeyboardButton("🎰 Запустить бурмалду"))
             markup.add(KeyboardButton("🎁 Запросить промокод"))
             bot.send_message(user_id, welcome_text, reply_markup=markup)
@@ -1113,7 +1229,7 @@ if bot:
             logger.error(f"Error in /balance: {e}")
 
     @bot.message_handler(commands=['casino'])
-    def play_casino(message):
+    def casino_start(message):
         try:
             user_id = message.from_user.id
             
@@ -1126,24 +1242,84 @@ if bot:
             if balance < 10:
                 bot.send_message(user_id, "❌ Для игры в казино нужно минимум 10 монет")
                 return
-                
-            # Простая логика казино
-            win = random.choice([True, False, False])  # 33% шанс выигрыша
-            if win:
-                win_amount = random.randint(5, 50)
-                new_balance = balance + win_amount
-                update_user_balance(user_id, new_balance)
-                bot.send_message(user_id, f"🎉 Поздравляем! Вы выиграли {win_amount} монет!\n💰 Новый баланс: {new_balance}")
-            else:
-                bet = 10
-                new_balance = balance - bet
-                update_user_balance(user_id, new_balance)
-                bot.send_message(user_id, f"😞 Вы проиграли {bet} монет\n💰 Новый баланс: {new_balance}")
-                
-            log_user_action(message.from_user, "play_casino")
+            
+            user_bet_mode[user_id] = True
+            bot.send_message(
+                user_id,
+                f"💰 Ваш баланс: {balance} монет\n\n"
+                "Выберите ставку:",
+                reply_markup=get_bet_keyboard()
+            )
+            log_user_action(message.from_user, "запустил казино")
             
         except Exception as e:
             logger.error(f"Error in /casino: {e}")
+
+    @bot.message_handler(func=lambda message: message.text in ["10", "100", "500", "1000", "Фулл балик", "🔙 Назад"] and user_bet_mode.get(message.from_user.id))
+    def handle_bet_selection(message):
+        try:
+            user_id = message.from_user.id
+            
+            if message.text == "🔙 Назад":
+                user_bet_mode[user_id] = False
+                markup = ReplyKeyboardMarkup(resize_keyboard=True)
+                markup.add(KeyboardButton("🎰 Запустить бурмалду"))
+                markup.add(KeyboardButton("🎁 Запросить промокод"))
+                bot.send_message(user_id, "✅ Возвращаемся в главное меню", reply_markup=markup)
+                return
+            
+            balance = get_user_balance(user_id)
+            
+            if message.text == "Фулл балик":
+                bet_amount = balance
+            else:
+                bet_amount = int(message.text)
+            
+            if bet_amount > balance:
+                bot.send_message(user_id, f"❌ Недостаточно средств! Ваш баланс: {balance} монет")
+                return
+                
+            if bet_amount < 10:
+                bot.send_message(user_id, "❌ Минимальная ставка: 10 монет")
+                return
+            
+            # Запускаем анимацию слотов
+            final_result, message_id = spin_slots_animation(bot, user_id, bet_amount)
+            
+            # Проверяем выигрышные линии
+            all_lines = check_all_lines(final_result)
+            total_win, winning_lines = calculate_win(all_lines, bet_amount)
+            
+            balance = get_user_balance(user_id)
+            
+            if total_win > 0:
+                # Выигрыш
+                new_balance = balance - bet_amount + total_win
+                update_user_balance(user_id, new_balance)
+                
+                result_text = f"🎉 ВЫ ВЫИГРАЛИ! 🎉\n\n"
+                result_text += f"💵 Ставка: {bet_amount} монет\n"
+                result_text += f"💰 Выигрыш: {total_win} монет\n"
+                result_text += f"💎 Новый баланс: {new_balance} монет\n\n"
+                result_text += "🏆 Выигрышные линии:\n" + "\n".join(winning_lines)
+                
+            else:
+                # Проигрыш
+                new_balance = balance - bet_amount
+                update_user_balance(user_id, new_balance)
+                
+                result_text = f"😞 ВЫ ПРОИГРАЛИ\n\n"
+                result_text += f"💵 Ставка: {bet_amount} монет\n"
+                result_text += f"💎 Новый баланс: {new_balance} монет\n"
+                result_text += "❌ Выигрышных линий нет"
+            
+            # Отправляем результат
+            bot.send_message(user_id, result_text, reply_markup=get_bet_keyboard())
+            log_user_action(message.from_user, f"сыграл в казино: ставка {bet_amount}, выигрыш {total_win}")
+            
+        except Exception as e:
+            logger.error(f"Error in bet selection: {e}")
+            bot.send_message(user_id, "❌ Ошибка при запуске слотов", reply_markup=get_bet_keyboard())
 
     @bot.message_handler(commands=['promo'])
     def use_promo(message):
@@ -1698,9 +1874,13 @@ if bot:
         except Exception as e:
             logger.error(f"Error in /clearlogs: {e}")
 
-    # Обработка кнопок
-    @bot.message_handler(func=lambda message: message.text == "📞 Попросить связаться со мной.")
-    def request_contact(message):
+    # Обработка кнопок главного меню
+    @bot.message_handler(func=lambda message: message.text == "🎰 Запустить бурмалду")
+    def start_casino_button(message):
+        casino_start(message)
+
+    @bot.message_handler(func=lambda message: message.text == "🎁 Запросить промокод")
+    def request_promo_button(message):
         try:
             user_id = message.from_user.id
             
@@ -1709,40 +1889,22 @@ if bot:
                 bot.send_message(user_id, "🚫 Вы забанены и не можете использовать эту функцию")
                 return
                 
-            cooldown = check_button_cooldown(user_id)
-            if cooldown > 0:
-                bot.send_message(user_id, f"⏳ Кнопка будет доступна через {int(cooldown)} секунд")
-                return
-                
-            # Убираем кнопку
-            bot.send_message(user_id, "✅ Ваш запрос отправлен! Ожидайте ответа.", reply_markup=ReplyKeyboardRemove())
-            
-            # Восстанавливаем кнопку через 30 секунд
-            restore_button(user_id)
-            
-            # Уведомляем админов
+            # Отправляем запрос всем админам
             admins = get_all_admins()
             user_info = f"@{message.from_user.username}" if message.from_user.username else message.from_user.first_name
             
             for admin in admins:
                 try:
                     admin_id = admin[0]
-                    bot.send_message(admin_id, f"📞 Пользователь {user_info} (ID: {user_id}) просит связаться с ним")
+                    bot.send_message(admin_id, f"🎫 Пользователь {user_info} (ID: {user_id}) запросил промокод")
                 except Exception as e:
-                    logger.error(f"Failed to notify admin {admin[0]} about contact request: {e}")
+                    logger.error(f"Failed to notify admin {admin[0]} about promo request: {e}")
                     
-            log_user_action(message.from_user, "запросил связь")
+            bot.send_message(user_id, "✅ Ваш запрос на промокод отправлен администраторам. Ожидайте создания промокода.")
+            log_user_action(message.from_user, "request_promo")
             
         except Exception as e:
-            logger.error(f"Error in contact request: {e}")
-
-    @bot.message_handler(func=lambda message: message.text == "🎰 Запустить бурмалду")
-    def start_casino_button(message):
-        play_casino(message)
-
-    @bot.message_handler(func=lambda message: message.text == "🎁 Запросить промокод")
-    def request_promo_button(message):
-        request_promo(message)
+            logger.error(f"Error in promo button: {e}")
 
     # Обработка callback кнопок
     @bot.callback_query_handler(func=lambda call: True)
