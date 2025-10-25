@@ -1099,9 +1099,10 @@ if os.environ.get('RENDER'):
     
     logger.info("🤖 Webhook configured - bot is ready!")
     
-    # Flask просто крутится, бот работает через webhook
+    # ЗАПУСКАЕМ FLASK НЕ В ПОТОКЕ, А В ОСНОВНОМ ПРОЦЕССЕ
     if __name__ == "__main__":
-        keep_alive()
+        logger.info("🚀 Starting Flask app directly...")
+        app.run(host='0.0.0.0', port=int(os.environ.get("PORT", 8080)))
         
 else:
     # Локально используем polling (ТОЛЬКО для разработки)
@@ -1112,7 +1113,5 @@ else:
         try:
             logger.info("🚀 Starting bot in POLLING mode (local development)")
             bot.polling(none_stop=True, timeout=60)
-        except Exception as e:
-            logger.exception("Polling error: %s", e)
         except Exception as e:
             logger.exception("Polling error: %s", e)
