@@ -6,7 +6,7 @@ import time
 import logging
 import sqlite3
 import datetime
-from threading import Thread
+from threading import Thread, Lock
 import requests
 import json
 from collections import defaultdict
@@ -40,6 +40,15 @@ admin_handler = logging.FileHandler(ADMIN_LOGFILE, encoding='utf-8')
 admin_handler.setFormatter(logging.Formatter('%(asctime)s - %(message)s'))
 admin_logger.addHandler(admin_handler)
 admin_logger.propagate = False
+
+# Глобальная блокировка для базы данных
+db_lock = Lock()
+
+def get_db_connection():
+    """Создает соединение с базой данных с блокировкой"""
+    conn = sqlite3.connect(DB_PATH, check_same_thread=False, timeout=30.0)
+    conn.execute("PRAGMA journal_mode=WAL")  # Включаем WAL режим для лучшей производительности
+    return conn
 
 def get_current_time():
     """Возвращает текущее время в формате UTC"""
@@ -557,240 +566,252 @@ def init_db():
     try:
         logger.info(f"Initializing database with ADMIN_ID: {ADMIN_ID}")
         
-        conn = sqlite3.connect(DB_PATH, check_same_thread=False)
-        c = conn.cursor()
-        
-        # Создаем таблицы
-        c.execute('''CREATE TABLE IF NOT EXISTS users
-                     (user_id INTEGER PRIMARY KEY, username TEXT, first_name TEXT, last_name TEXT, date_added TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
-        c.execute('''CREATE TABLE IF NOT EXISTS admins
-                     (user_id INTEGER PRIMARY KEY, username TEXT, first_name TEXT, is_main_admin BOOLEAN DEFAULT FALSE, date_added TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
-        c.execute('''CREATE TABLE IF NOT EXISTS bans
-                     (user_id INTEGER PRIMARY KEY, 
-                      ban_type TEXT NOT NULL,
-                      ban_duration_seconds INTEGER,
-                      banned_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                      ban_reason TEXT,
-                      banned_by INTEGER,
-                      unban_request_date TIMESTAMP)''')
-        
-        # Создаем таблицы для бурмалды
-        c.execute('''CREATE TABLE IF NOT EXISTS user_balance
-                     (user_id INTEGER PRIMARY KEY, balance INTEGER DEFAULT 0)''')
-        c.execute('''CREATE TABLE IF NOT EXISTS promocodes
-                     (promocode TEXT PRIMARY KEY, value INTEGER, used BOOLEAN DEFAULT FALSE, used_by INTEGER)''')
-        
-        # Добавляем главного админа если его нет
-        c.execute("INSERT OR IGNORE INTO admins (user_id, username, first_name, is_main_admin) VALUES (?, ?, ?, ?)",
-                  (ADMIN_ID, "kvazador", "kvazador", True))
-        
-        # Проверяем что админ добавлен
-        c.execute("SELECT * FROM admins WHERE user_id = ?", (ADMIN_ID,))
-        admin_check = c.fetchone()
-        if admin_check:
-            logger.info(f"✅ Main admin successfully added: {admin_check}")
-        else:
-            logger.error(f"❌ Failed to add main admin: {ADMIN_ID}")
-        
-        # Показываем всех админов в логах
-        c.execute("SELECT * FROM admins")
-        all_admins = c.fetchall()
-        logger.info(f"All admins in DB: {all_admins}")
-        
-        conn.commit()
-        conn.close()
-        logger.info(f"Database initialized at {DB_PATH}")
+        with db_lock:
+            conn = get_db_connection()
+            c = conn.cursor()
+            
+            # Создаем таблицы
+            c.execute('''CREATE TABLE IF NOT EXISTS users
+                         (user_id INTEGER PRIMARY KEY, username TEXT, first_name TEXT, last_name TEXT, date_added TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
+            c.execute('''CREATE TABLE IF NOT EXISTS admins
+                         (user_id INTEGER PRIMARY KEY, username TEXT, first_name TEXT, is_main_admin BOOLEAN DEFAULT FALSE, date_added TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
+            c.execute('''CREATE TABLE IF NOT EXISTS bans
+                         (user_id INTEGER PRIMARY KEY, 
+                          ban_type TEXT NOT NULL,
+                          ban_duration_seconds INTEGER,
+                          banned_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                          ban_reason TEXT,
+                          banned_by INTEGER,
+                          unban_request_date TIMESTAMP)''')
+            
+            # Создаем таблицы для бурмалды
+            c.execute('''CREATE TABLE IF NOT EXISTS user_balance
+                         (user_id INTEGER PRIMARY KEY, balance INTEGER DEFAULT 0)''')
+            c.execute('''CREATE TABLE IF NOT EXISTS promocodes
+                         (promocode TEXT PRIMARY KEY, value INTEGER, used BOOLEAN DEFAULT FALSE, used_by INTEGER)''')
+            
+            # Добавляем главного админа если его нет
+            c.execute("INSERT OR IGNORE INTO admins (user_id, username, first_name, is_main_admin) VALUES (?, ?, ?, ?)",
+                      (ADMIN_ID, "kvazador", "kvazador", True))
+            
+            # Проверяем что админ добавлен
+            c.execute("SELECT * FROM admins WHERE user_id = ?", (ADMIN_ID,))
+            admin_check = c.fetchone()
+            if admin_check:
+                logger.info(f"✅ Main admin successfully added: {admin_check}")
+            else:
+                logger.error(f"❌ Failed to add main admin: {ADMIN_ID}")
+            
+            # Показываем всех админов в логах
+            c.execute("SELECT * FROM admins")
+            all_admins = c.fetchall()
+            logger.info(f"All admins in DB: {all_admins}")
+            
+            conn.commit()
+            conn.close()
+            logger.info(f"Database initialized at {DB_PATH}")
         
     except Exception as e:
         logger.exception(f"Failed to initialize DB: {e}")
 
 def register_user(user_id, username, first_name, last_name):
     """Сохраняет/обновляет пользователя в БД."""
-    try:
-        conn = sqlite3.connect(DB_PATH, check_same_thread=False)
-        c = conn.cursor()
-        c.execute("INSERT OR REPLACE INTO users (user_id, username, first_name, last_name) VALUES (?, ?, ?, ?)",
-                  (user_id, username, first_name, last_name))
-        # Создаем запись баланса если её нет
-        c.execute("INSERT OR IGNORE INTO user_balance (user_id, balance) VALUES (?, ?)", (user_id, 0))
-        conn.commit()
-        conn.close()
-        logger.debug("Registered user %s (%s)", user_id, username)
-    except Exception as e:
-        logger.exception("Failed to register user %s: %s", user_id, e)
+    with db_lock:
+        try:
+            conn = get_db_connection()
+            c = conn.cursor()
+            c.execute("INSERT OR REPLACE INTO users (user_id, username, first_name, last_name) VALUES (?, ?, ?, ?)",
+                      (user_id, username, first_name, last_name))
+            # Создаем запись баланса если её нет
+            c.execute("INSERT OR IGNORE INTO user_balance (user_id, balance) VALUES (?, ?)", (user_id, 0))
+            conn.commit()
+            conn.close()
+            logger.debug("Registered user %s (%s)", user_id, username)
+        except Exception as e:
+            logger.exception("Failed to register user %s: %s", user_id, e)
 
 def is_admin(user_id):
     """Проверяет, является ли пользователь админом"""
-    try:
-        conn = sqlite3.connect(DB_PATH, check_same_thread=False)
-        c = conn.cursor()
-        c.execute("SELECT user_id FROM admins WHERE user_id = ?", (user_id,))
-        result = c.fetchone()
-        conn.close()
-        return result is not None
-    except Exception as e:
-        logger.exception("Failed to check admin status for %s: %s", user_id, e)
-        return False
+    with db_lock:
+        try:
+            conn = get_db_connection()
+            c = conn.cursor()
+            c.execute("SELECT user_id FROM admins WHERE user_id = ?", (user_id,))
+            result = c.fetchone()
+            conn.close()
+            return result is not None
+        except Exception as e:
+            logger.exception("Failed to check admin status for %s: %s", user_id, e)
+            return False
 
 def is_main_admin(user_id):
     """Проверяет, является ли пользователь главным админом"""
-    try:
-        conn = sqlite3.connect(DB_PATH, check_same_thread=False)
-        c = conn.cursor()
-        c.execute("SELECT user_id FROM admins WHERE user_id = ? AND is_main_admin = TRUE", (user_id,))
-        result = c.fetchone()
-        conn.close()
-        return result is not None
-    except Exception as e:
-        logger.exception("Failed to check main admin status for %s: %s", user_id, e)
-        return False
+    with db_lock:
+        try:
+            conn = get_db_connection()
+            c = conn.cursor()
+            c.execute("SELECT user_id FROM admins WHERE user_id = ? AND is_main_admin = TRUE", (user_id,))
+            result = c.fetchone()
+            conn.close()
+            return result is not None
+        except Exception as e:
+            logger.exception("Failed to check main admin status for %s: %s", user_id, e)
+            return False
 
 def add_admin(user_id, username, first_name):
     """Добавляет обычного админа"""
-    try:
-        conn = sqlite3.connect(DB_PATH, check_same_thread=False)
-        c = conn.cursor()
-        c.execute("INSERT OR REPLACE INTO admins (user_id, username, first_name) VALUES (?, ?, ?)",
-                  (user_id, username, first_name))
-        conn.commit()
-        conn.close()
-        logger.info("Added admin %s (%s)", user_id, username)
-        return True
-    except Exception as e:
-        logger.exception("Failed to add admin %s: %s", user_id, e)
-        return False
+    with db_lock:
+        try:
+            conn = get_db_connection()
+            c = conn.cursor()
+            c.execute("INSERT OR REPLACE INTO admins (user_id, username, first_name) VALUES (?, ?, ?)",
+                      (user_id, username, first_name))
+            conn.commit()
+            conn.close()
+            logger.info("Added admin %s (%s)", user_id, username)
+            return True
+        except Exception as e:
+            logger.exception("Failed to add admin %s: %s", user_id, e)
+            return False
 
 def remove_admin(user_id):
     """Удаляет админа (кроме главного)"""
-    try:
-        conn = sqlite3.connect(DB_PATH, check_same_thread=False)
-        c = conn.cursor()
-        c.execute("DELETE FROM admins WHERE user_id = ? AND is_main_admin = FALSE", (user_id,))
-        conn.commit()
-        conn.close()
-        logger.info("Removed admin %s", user_id)
-        return True
-    except Exception as e:
-        logger.exception("Failed to remove admin %s: %s", user_id, e)
-        return False
+    with db_lock:
+        try:
+            conn = get_db_connection()
+            c = conn.cursor()
+            c.execute("DELETE FROM admins WHERE user_id = ? AND is_main_admin = FALSE", (user_id,))
+            conn.commit()
+            conn.close()
+            logger.info("Removed admin %s", user_id)
+            return True
+        except Exception as e:
+            logger.exception("Failed to remove admin %s: %s", user_id, e)
+            return False
 
 def get_all_users():
     """Возвращает список всех пользователей"""
-    try:
-        conn = sqlite3.connect(DB_PATH, check_same_thread=False)
-        c = conn.cursor()
-        c.execute("SELECT user_id, username, first_name, last_name FROM users")
-        users = c.fetchall()
-        conn.close()
-        return users
-    except Exception as e:
-        logger.exception("Failed to get users list: %s", e)
-        return []
+    with db_lock:
+        try:
+            conn = get_db_connection()
+            c = conn.cursor()
+            c.execute("SELECT user_id, username, first_name, last_name FROM users")
+            users = c.fetchall()
+            conn.close()
+            return users
+        except Exception as e:
+            logger.exception("Failed to get users list: %s", e)
+            return []
 
 def get_user_count():
     """Возвращает количество пользователей"""
-    try:
-        conn = sqlite3.connect(DB_PATH, check_same_thread=False)
-        c = conn.cursor()
-        c.execute("SELECT COUNT(*) FROM users")
-        count = c.fetchone()[0]
-        conn.close()
-        return count
-    except Exception as e:
-        logger.exception("Failed to get user count: %s", e)
-        return 0
+    with db_lock:
+        try:
+            conn = get_db_connection()
+            c = conn.cursor()
+            c.execute("SELECT COUNT(*) FROM users")
+            count = c.fetchone()[0]
+            conn.close()
+            return count
+        except Exception as e:
+            logger.exception("Failed to get user count: %s", e)
+            return 0
 
 def get_all_admins():
     """Возвращает список всех админов"""
-    try:
-        conn = sqlite3.connect(DB_PATH, check_same_thread=False)
-        c = conn.cursor()
-        c.execute("SELECT user_id, username, first_name, is_main_admin FROM admins")
-        admins = c.fetchall()
-        conn.close()
-        return admins
-    except Exception as e:
-        logger.exception("Failed to get admins list: %s", e)
-        return []
+    with db_lock:
+        try:
+            conn = get_db_connection()
+            c = conn.cursor()
+            c.execute("SELECT user_id, username, first_name, is_main_admin FROM admins")
+            admins = c.fetchall()
+            conn.close()
+            return admins
+        except Exception as e:
+            logger.exception("Failed to get admins list: %s", e)
+            return []
 
 # ==================== СИСТЕМА БАНОВ ====================
 
 def ban_user(user_id, ban_type, duration_seconds=None, reason="", banned_by=None):
     """Банит пользователя"""
-    try:
-        conn = sqlite3.connect(DB_PATH, check_same_thread=False)
-        c = conn.cursor()
-        
-        if ban_type == "permanent":
-            c.execute('''INSERT OR REPLACE INTO bans 
-                        (user_id, ban_type, ban_duration_seconds, ban_reason, banned_by) 
-                        VALUES (?, ?, ?, ?, ?)''',
-                     (user_id, ban_type, None, reason, banned_by))
-        else:  # temporary
-            c.execute('''INSERT OR REPLACE INTO bans 
-                        (user_id, ban_type, ban_duration_seconds, ban_reason, banned_by) 
-                        VALUES (?, ?, ?, ?, ?)''',
-                     (user_id, ban_type, duration_seconds, reason, banned_by))
-        
-        conn.commit()
-        conn.close()
-        logger.info("Banned user %s: type=%s, duration=%s", user_id, ban_type, duration_seconds)
-        return True
-    except Exception as e:
-        logger.exception("Failed to ban user %s: %s", user_id, e)
-        return False
+    with db_lock:
+        try:
+            conn = get_db_connection()
+            c = conn.cursor()
+            
+            if ban_type == "permanent":
+                c.execute('''INSERT OR REPLACE INTO bans 
+                            (user_id, ban_type, ban_duration_seconds, ban_reason, banned_by) 
+                            VALUES (?, ?, ?, ?, ?)''',
+                         (user_id, ban_type, None, reason, banned_by))
+            else:  # temporary
+                c.execute('''INSERT OR REPLACE INTO bans 
+                            (user_id, ban_type, ban_duration_seconds, ban_reason, banned_by) 
+                            VALUES (?, ?, ?, ?, ?)''',
+                         (user_id, ban_type, duration_seconds, reason, banned_by))
+            
+            conn.commit()
+            conn.close()
+            logger.info("Banned user %s: type=%s, duration=%s", user_id, ban_type, duration_seconds)
+            return True
+        except Exception as e:
+            logger.exception("Failed to ban user %s: %s", user_id, e)
+            return False
 
 def unban_user(user_id):
     """Разбанивает пользователя"""
-    try:
-        conn = sqlite3.connect(DB_PATH, check_same_thread=False)
-        c = conn.cursor()
-        c.execute("DELETE FROM bans WHERE user_id = ?", (user_id,))
-        conn.commit()
-        conn.close()
-        logger.info("Unbanned user %s", user_id)
-        return True
-    except Exception as e:
-        logger.exception("Failed to unban user %s: %s", user_id, e)
-        return False
+    with db_lock:
+        try:
+            conn = get_db_connection()
+            c = conn.cursor()
+            c.execute("DELETE FROM bans WHERE user_id = ?", (user_id,))
+            conn.commit()
+            conn.close()
+            logger.info("Unbanned user %s", user_id)
+            return True
+        except Exception as e:
+            logger.exception("Failed to unban user %s: %s", user_id, e)
+            return False
 
 def is_banned(user_id):
     """Проверяет, забанен ли пользователь и возвращает информацию о бане"""
-    try:
-        conn = sqlite3.connect(DB_PATH, check_same_thread=False)
-        c = conn.cursor()
-        c.execute("SELECT ban_type, ban_duration_seconds, banned_at, ban_reason FROM bans WHERE user_id = ?", (user_id,))
-        result = c.fetchone()
-        conn.close()
-        
-        if not result:
-            return None
-        
-        ban_type, duration_seconds, banned_at, reason = result
-        
-        if ban_type == "temporary" and duration_seconds:
-            banned_time = datetime.datetime.strptime(banned_at, '%Y-%m-%d %H:%M:%S')
-            current_time = datetime.datetime.utcnow()
-            time_passed = (current_time - banned_time).total_seconds()
+    with db_lock:
+        try:
+            conn = get_db_connection()
+            c = conn.cursor()
+            c.execute("SELECT ban_type, ban_duration_seconds, banned_at, ban_reason FROM bans WHERE user_id = ?", (user_id,))
+            result = c.fetchone()
+            conn.close()
             
-            if time_passed >= duration_seconds:
-                unban_user(user_id)
+            if not result:
                 return None
-            else:
-                time_left = duration_seconds - time_passed
-                return {
-                    'type': ban_type,
-                    'time_left': time_left,
-                    'reason': reason
-                }
-        
-        return {
-            'type': ban_type,
-            'reason': reason
-        }
-    except Exception as e:
-        logger.exception("Failed to check ban status for %s: %s", user_id, e)
-        return None
+            
+            ban_type, duration_seconds, banned_at, reason = result
+            
+            if ban_type == "temporary" and duration_seconds:
+                banned_time = datetime.datetime.strptime(banned_at, '%Y-%m-%d %H:%M:%S')
+                current_time = datetime.datetime.utcnow()
+                time_passed = (current_time - banned_time).total_seconds()
+                
+                if time_passed >= duration_seconds:
+                    unban_user(user_id)
+                    return None
+                else:
+                    time_left = duration_seconds - time_passed
+                    return {
+                        'type': ban_type,
+                        'time_left': time_left,
+                        'reason': reason
+                    }
+            
+            return {
+                'type': ban_type,
+                'reason': reason
+            }
+        except Exception as e:
+            logger.exception("Failed to check ban status for %s: %s", user_id, e)
+            return None
 
 def format_time_left(seconds):
     """Форматирует оставшееся время в читаемый вид"""
@@ -807,143 +828,150 @@ def format_time_left(seconds):
 
 def can_request_unban(user_id):
     """Проверяет, может ли пользователь запросить разбан (прошла ли неделя с последнего запроса)"""
-    try:
-        conn = sqlite3.connect(DB_PATH, check_same_thread=False)
-        c = conn.cursor()
-        c.execute("SELECT unban_request_date FROM bans WHERE user_id = ? AND ban_type = 'permanent'", (user_id,))
-        result = c.fetchone()
-        conn.close()
-        
-        if not result or not result[0]:
-            return True
-        
-        last_request = datetime.datetime.strptime(result[0], '%Y-%m-%d %H:%M:%S')
-        current_time = datetime.datetime.utcnow()
-        time_passed = (current_time - last_request).total_seconds()
-        
-        return time_passed >= 7 * 24 * 3600
-    except Exception as e:
-        logger.exception("Failed to check unban request for %s: %s", user_id, e)
-        return False
+    with db_lock:
+        try:
+            conn = get_db_connection()
+            c = conn.cursor()
+            c.execute("SELECT unban_request_date FROM bans WHERE user_id = ? AND ban_type = 'permanent'", (user_id,))
+            result = c.fetchone()
+            conn.close()
+            
+            if not result or not result[0]:
+                return True
+            
+            last_request = datetime.datetime.strptime(result[0], '%Y-%m-%d %H:%M:%S')
+            current_time = datetime.datetime.utcnow()
+            time_passed = (current_time - last_request).total_seconds()
+            
+            return time_passed >= 7 * 24 * 3600
+        except Exception as e:
+            logger.exception("Failed to check unban request for %s: %s", user_id, e)
+            return False
 
 def update_unban_request_date(user_id):
     """Обновляет дату последнего запроса на разбан"""
-    try:
-        conn = sqlite3.connect(DB_PATH, check_same_thread=False)
-        c = conn.cursor()
-        c.execute("UPDATE bans SET unban_request_date = CURRENT_TIMESTAMP WHERE user_id = ?", (user_id,))
-        conn.commit()
-        conn.close()
-        return True
-    except Exception as e:
-        logger.exception("Failed to update unban request date for %s: %s", user_id, e)
-        return False
+    with db_lock:
+        try:
+            conn = get_db_connection()
+            c = conn.cursor()
+            c.execute("UPDATE bans SET unban_request_date = CURRENT_TIMESTAMP WHERE user_id = ?", (user_id,))
+            conn.commit()
+            conn.close()
+            return True
+        except Exception as e:
+            logger.exception("Failed to update unban request date for %s: %s", user_id, e)
+            return False
 
 # ==================== СИСТЕМА БУРМАЛДЫ И ПРОМОКОДОВ ====================
 
 def get_user_balance(user_id):
     """Возвращает баланс пользователя"""
-    try:
-        conn = sqlite3.connect(DB_PATH, check_same_thread=False)
-        c = conn.cursor()
-        c.execute("SELECT balance FROM user_balance WHERE user_id = ?", (user_id,))
-        result = c.fetchone()
-        conn.close()
-        return result[0] if result else 0
-    except Exception as e:
-        logger.exception("Failed to get user balance for %s: %s", user_id, e)
-        return 0
+    with db_lock:
+        try:
+            conn = get_db_connection()
+            c = conn.cursor()
+            c.execute("SELECT balance FROM user_balance WHERE user_id = ?", (user_id,))
+            result = c.fetchone()
+            conn.close()
+            return result[0] if result else 0
+        except Exception as e:
+            logger.exception("Failed to get user balance for %s: %s", user_id, e)
+            return 0
 
 def update_user_balance(user_id, new_balance):
     """Обновляет баланс пользователя"""
-    try:
-        conn = sqlite3.connect(DB_PATH, check_same_thread=False)
-        c = conn.cursor()
-        c.execute("UPDATE user_balance SET balance = ? WHERE user_id = ?", (new_balance, user_id))
-        conn.commit()
-        conn.close()
-        return True
-    except Exception as e:
-        logger.exception("Failed to update user balance for %s: %s", user_id, e)
-        return False
+    with db_lock:
+        try:
+            conn = get_db_connection()
+            c = conn.cursor()
+            c.execute("UPDATE user_balance SET balance = ? WHERE user_id = ?", (new_balance, user_id))
+            conn.commit()
+            conn.close()
+            return True
+        except Exception as e:
+            logger.exception("Failed to update user balance for %s: %s", user_id, e)
+            return False
 
 def add_promocode(promocode, value):
     """Добавляет промокод"""
-    try:
-        conn = sqlite3.connect(DB_PATH, check_same_thread=False)
-        c = conn.cursor()
-        c.execute("INSERT OR REPLACE INTO promocodes (promocode, value) VALUES (?, ?)", (promocode, value))
-        conn.commit()
-        conn.close()
-        logger.info("Added promocode: %s with value: %s", promocode, value)
-        return True
-    except Exception as e:
-        logger.exception("Failed to add promocode %s: %s", promocode, e)
-        return False
+    with db_lock:
+        try:
+            conn = get_db_connection()
+            c = conn.cursor()
+            c.execute("INSERT OR REPLACE INTO promocodes (promocode, value) VALUES (?, ?)", (promocode, value))
+            conn.commit()
+            conn.close()
+            logger.info("Added promocode: %s with value: %s", promocode, value)
+            return True
+        except Exception as e:
+            logger.exception("Failed to add promocode %s: %s", promocode, e)
+            return False
 
 def use_promocode(promocode, user_id):
     """Активирует промокод для пользователя"""
-    try:
-        conn = sqlite3.connect(DB_PATH, check_same_thread=False)
-        c = conn.cursor()
-        
-        # Проверяем существует ли промокод и не использован ли он
-        c.execute("SELECT value, used FROM promocodes WHERE promocode = ?", (promocode,))
-        result = c.fetchone()
-        
-        if not result:
-            return None, "Промокод не найден"
-        
-        value, used = result
-        if used:
-            return None, "Промокод уже использован"
-        
-        # Активируем промокод
-        c.execute("UPDATE promocodes SET used = TRUE, used_by = ? WHERE promocode = ?", (user_id, promocode))
-        
-        # Обновляем баланс пользователя
-        current_balance = get_user_balance(user_id)
-        new_balance = current_balance + value
-        success = update_user_balance(user_id, new_balance)
-        
-        if not success:
-            return None, "Ошибка при обновлении баланса"
+    with db_lock:
+        try:
+            conn = get_db_connection()
+            c = conn.cursor()
             
-        conn.commit()
-        conn.close()
-        
-        logger.info("User %s used promocode %s, got %s coins, new balance: %s", user_id, promocode, value, new_balance)
-        return value, f"Промокод активирован! Вы получили {value} монет."
-        
-    except Exception as e:
-        logger.exception("Failed to use promocode %s for user %s: %s", promocode, user_id, e)
-        return None, "Ошибка при активации промокода"
+            # Проверяем существует ли промокод и не использован ли он
+            c.execute("SELECT value, used FROM promocodes WHERE promocode = ?", (promocode,))
+            result = c.fetchone()
+            
+            if not result:
+                return None, "Промокод не найден"
+            
+            value, used = result
+            if used:
+                return None, "Промокод уже использован"
+            
+            # Активируем промокод
+            c.execute("UPDATE promocodes SET used = TRUE, used_by = ? WHERE promocode = ?", (user_id, promocode))
+            
+            # Обновляем баланс пользователя
+            current_balance = get_user_balance(user_id)
+            new_balance = current_balance + value
+            success = update_user_balance(user_id, new_balance)
+            
+            if not success:
+                return None, "Ошибка при обновлении баланса"
+                
+            conn.commit()
+            conn.close()
+            
+            logger.info("User %s used promocode %s, got %s coins, new balance: %s", user_id, promocode, value, new_balance)
+            return value, f"Промокод активирован! Вы получили {value} монет."
+            
+        except Exception as e:
+            logger.exception("Failed to use promocode %s for user %s: %s", promocode, user_id, e)
+            return None, "Ошибка при активации промокода"
 
 def get_promocode_stats():
     """Возвращает статистику по промокодам"""
-    try:
-        conn = sqlite3.connect(DB_PATH, check_same_thread=False)
-        c = conn.cursor()
-        
-        c.execute("SELECT COUNT(*) FROM promocodes")
-        total = c.fetchone()[0]
-        
-        c.execute("SELECT COUNT(*) FROM promocodes WHERE used = TRUE")
-        used = c.fetchone()[0]
-        
-        c.execute("SELECT COUNT(*) FROM promocodes WHERE used = FALSE")
-        available = c.fetchone()[0]
-        
-        conn.close()
-        
-        return {
-            'total': total,
-            'used': used,
-            'available': available
-        }
-    except Exception as e:
-        logger.exception("Failed to get promocode stats: %s", e)
-        return {'total': 0, 'used': 0, 'available': 0}
+    with db_lock:
+        try:
+            conn = get_db_connection()
+            c = conn.cursor()
+            
+            c.execute("SELECT COUNT(*) FROM promocodes")
+            total = c.fetchone()[0]
+            
+            c.execute("SELECT COUNT(*) FROM promocodes WHERE used = TRUE")
+            used = c.fetchone()[0]
+            
+            c.execute("SELECT COUNT(*) FROM promocodes WHERE used = FALSE")
+            available = c.fetchone()[0]
+            
+            conn.close()
+            
+            return {
+                'total': total,
+                'used': used,
+                'available': available
+            }
+        except Exception as e:
+            logger.exception("Failed to get promocode stats: %s", e)
+            return {'total': 0, 'used': 0, 'available': 0}
 
 user_reply_mode = {}
 user_unban_mode = {}
@@ -1323,7 +1351,7 @@ if bot:
             
             # Получаем список использованных промокодов
             try:
-                conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+                conn = get_db_connection()
                 c = conn.cursor()
                 c.execute("SELECT promocode, value, used_by FROM promocodes WHERE used = TRUE")
                 used_promos = c.fetchall()
@@ -1665,7 +1693,7 @@ if bot:
             update_unban_request_date(user_id)
             user_unban_mode[user_id] = False
             
-            bot.send_message(user_id, "✅ Ваш запрос на разбан отправлен модераторам. Следующая попытка будет доступна через неделю.")
+            bot.send_message(user_id, "✅ Ваш запрос на разбан отправлен модераторам. Следующая попытка будет доступна через недели.")
             
         except Exception:
             logger.exception("Error in unban request handler: %s", message)
@@ -2059,7 +2087,7 @@ if bot:
             count = get_user_count()
             
             try:
-                conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+                conn = get_db_connection()
                 c = conn.cursor()
                 c.execute("SELECT COUNT(*) FROM bans WHERE ban_type = 'permanent'")
                 permanent_bans = c.fetchone()[0]
