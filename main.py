@@ -12,9 +12,10 @@ from collections import defaultdict
 import random
 import urllib.parse as urlparse
 
+# ИМПОРТИРУЕМ request
 from flask import Flask, request
 import telebot
-from telebot.types import ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove
+from telebot.types import ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove, InlineKeyboardMarkup, InlineKeyboardButton
 
 # ----------------------------
 # Настройка логирования
@@ -992,7 +993,7 @@ user_reply_mode = {}
 user_unban_mode = {}
 
 # ----------------------------
-# Хэндлеры бота
+# ХЭНДЛЕРЫ БОТА - ВСЕ КОМАНДЫ
 # ----------------------------
 if bot:
     @bot.message_handler(commands=['start'])
@@ -1039,46 +1040,807 @@ if bot:
             
             log_user_action(message.from_user, "start")
             
-        except Exception:
+        except Exception as e:
             logger.exception("Error in /start handler for message: %s", message)
 
-    # ... остальные хэндлеры остаются такими же как в предыдущей версии
-    # Просто замени все вызовы SQLite функций на PostgreSQL версии
-
-# ----------------------------
-# Основной цикл запуска бота
-# ----------------------------
-
-def start_bot_loop():
-    """Запускает бота и перезапускает при ошибках."""
-    if not bot:
-        logger.error("Bot object is not created because BOT_TOKEN is missing.")
-        return
-
-    ensure_log_files()
-    init_db()
-
-    try:
-        logger.info("Attempting bot.get_me() to verify token...")
-        me = bot.get_me()
-        logger.info("Bot connected as: %s (id=%s)", me.username, me.id)
-    except Exception as e:
-        logger.exception("Failed to connect to Telegram. Check BOT_TOKEN. %s", e)
-        return
-
-    logger.info("Bot is ready to receive messages.")
-
-    while True:
+    @bot.message_handler(commands=['help'])
+    def send_help(message):
         try:
-            bot.infinity_polling(
-                timeout=60,
-                long_polling_timeout=60,
-                logger_level=logging.INFO
-            )
+            user_id = message.from_user.id
+            is_user_admin = is_admin(user_id)
+            
+            if is_user_admin:
+                help_text = (
+                    "Доступные команды:\n\n"
+                    "Для пользователей:\n"
+                    "/start - начать работу\n"
+                    "/help - эта справка\n"
+                    "/casino - играть в казино\n"
+                    "/balance - проверить баланс\n"
+                    "/promo [код] - активировать промокод\n"
+                    "/get_promo - запросить промокод\n"
+                    "/unban - запросить разбан\n\n"
+                    "Для админов:\n"
+                    "/admin - админ панель\n"
+                    "/add_promo [код] [сумма] - создать промокод\n"
+                    "/adminlogs [дни] - логи админов\n"
+                    "/restart - перезапуск бота\n"
+                    "/debug - отладка\n"
+                    "/myrights - мои права\n"
+                    "/sendall [сообщение] - рассылка\n"
+                    "/ban [id] [время] [причина] - бан\n"
+                    "/unban [id] - разбан\n"
+                    "/addadmin [id] - добавить админа\n"
+                    "/removeadmin [id] - удалить админа\n"
+                    "/users - список пользователей\n"
+                    "/admins - список админов\n"
+                    "/stats - статистика\n"
+                    "/clearlogs - очистить логи"
+                )
+            else:
+                help_text = (
+                    "Доступные команды:\n\n"
+                    "/start - начать работу\n"
+                    "/help - эта справка\n"
+                    "/casino - играть в казино\n"
+                    "/balance - проверить баланс\n"
+                    "/promo [код] - активировать промокод\n"
+                    "/get_promo - запросить промокод\n"
+                    "/unban - запросить разбан"
+                )
+            
+            bot.send_message(user_id, help_text)
+            log_user_action(message.from_user, "help")
+            
         except Exception as e:
-            logger.exception("Polling error: %s", e)
-            logger.info("Restarting polling in 10 seconds...")
-            time.sleep(10)
+            logger.error(f"Error in /help: {e}")
+
+    @bot.message_handler(commands=['balance'])
+    def check_balance(message):
+        try:
+            user_id = message.from_user.id
+            
+            ban_info = is_banned(user_id)
+            if ban_info:
+                bot.send_message(user_id, "🚫 Вы забанены и не можете использовать эту команду")
+                return
+                
+            balance = get_user_balance(user_id)
+            bot.send_message(user_id, f"💰 Ваш текущий баланс: {balance} монет")
+            log_user_action(message.from_user, "check_balance")
+            
+        except Exception as e:
+            logger.error(f"Error in /balance: {e}")
+
+    @bot.message_handler(commands=['casino'])
+    def play_casino(message):
+        try:
+            user_id = message.from_user.id
+            
+            ban_info = is_banned(user_id)
+            if ban_info:
+                bot.send_message(user_id, "🚫 Вы забанены и не можете использовать эту команду")
+                return
+                
+            balance = get_user_balance(user_id)
+            if balance < 10:
+                bot.send_message(user_id, "❌ Для игры в казино нужно минимум 10 монет")
+                return
+                
+            # Простая логика казино
+            win = random.choice([True, False, False])  # 33% шанс выигрыша
+            if win:
+                win_amount = random.randint(5, 50)
+                new_balance = balance + win_amount
+                update_user_balance(user_id, new_balance)
+                bot.send_message(user_id, f"🎉 Поздравляем! Вы выиграли {win_amount} монет!\n💰 Новый баланс: {new_balance}")
+            else:
+                bet = 10
+                new_balance = balance - bet
+                update_user_balance(user_id, new_balance)
+                bot.send_message(user_id, f"😞 Вы проиграли {bet} монет\n💰 Новый баланс: {new_balance}")
+                
+            log_user_action(message.from_user, "play_casino")
+            
+        except Exception as e:
+            logger.error(f"Error in /casino: {e}")
+
+    @bot.message_handler(commands=['promo'])
+    def use_promo(message):
+        try:
+            user_id = message.from_user.id
+            
+            ban_info = is_banned(user_id)
+            if ban_info:
+                bot.send_message(user_id, "🚫 Вы забанены и не можете использовать эту команду")
+                return
+                
+            args = message.text.split()
+            if len(args) < 2:
+                bot.send_message(user_id, "❌ Использование: /promo [код]")
+                return
+                
+            promocode = args[1]
+            value, result_message = use_promocode(promocode, user_id)
+            
+            if value is not None:
+                bot.send_message(user_id, result_message)
+                log_user_action(message.from_user, f"used_promo {promocode}")
+            else:
+                bot.send_message(user_id, f"❌ {result_message}")
+                
+        except Exception as e:
+            logger.error(f"Error in /promo: {e}")
+
+    @bot.message_handler(commands=['get_promo'])
+    def request_promo(message):
+        try:
+            user_id = message.from_user.id
+            
+            ban_info = is_banned(user_id)
+            if ban_info:
+                bot.send_message(user_id, "🚫 Вы забанены и не можете использовать эту команду")
+                return
+                
+            # Отправляем запрос всем админам
+            admins = get_all_admins()
+            user_info = f"@{message.from_user.username}" if message.from_user.username else message.from_user.first_name
+            
+            for admin in admins:
+                try:
+                    admin_id = admin[0]
+                    bot.send_message(admin_id, f"🎫 Пользователь {user_info} (ID: {user_id}) запросил промокод")
+                except Exception as e:
+                    logger.error(f"Failed to notify admin {admin[0]} about promo request: {e}")
+                    
+            bot.send_message(user_id, "✅ Ваш запрос на промокод отправлен администраторам. Ожидайте создания промокода.")
+            log_user_action(message.from_user, "request_promo")
+            
+        except Exception as e:
+            logger.error(f"Error in /get_promo: {e}")
+
+    @bot.message_handler(commands=['unban'])
+    def request_unban(message):
+        try:
+            user_id = message.from_user.id
+            
+            ban_info = is_banned(user_id)
+            if not ban_info:
+                bot.send_message(user_id, "✅ Вы не забанены")
+                return
+                
+            if ban_info['type'] != 'permanent':
+                time_left = format_time_left(ban_info['time_left'])
+                bot.send_message(user_id, f"⏳ Вы временно забанены. До разбана осталось: {time_left}")
+                return
+                
+            if not can_request_unban(user_id):
+                bot.send_message(user_id, "❌ Вы можете запрашивать разбан только раз в неделю")
+                return
+                
+            # Отправляем запрос админам
+            admins = get_all_admins()
+            user_info = f"@{message.from_user.username}" if message.from_user.username else message.from_user.first_name
+            
+            for admin in admins:
+                try:
+                    admin_id = admin[0]
+                    markup = InlineKeyboardMarkup()
+                    markup.add(InlineKeyboardButton("✅ Разбанить", callback_data=f"unban_{user_id}"))
+                    bot.send_message(admin_id, 
+                                   f"🔓 Пользователь {user_info} (ID: {user_id}) запросил разбан\n"
+                                   f"Причина бана: {ban_info.get('reason', 'Не указана')}",
+                                   reply_markup=markup)
+                except Exception as e:
+                    logger.error(f"Failed to notify admin {admin[0]} about unban request: {e}")
+                    
+            update_unban_request_date(user_id)
+            bot.send_message(user_id, "✅ Ваш запрос на разбан отправлен администраторам. Ожидайте решения.")
+            log_user_action(message.from_user, "request_unban")
+            
+        except Exception as e:
+            logger.error(f"Error in /unban: {e}")
+
+    # ==================== АДМИН КОМАНДЫ ====================
+
+    @bot.message_handler(commands=['admin'])
+    def admin_panel(message):
+        try:
+            user_id = message.from_user.id
+            
+            if not is_admin(user_id):
+                bot.send_message(user_id, "❌ У вас нет прав для этой команды")
+                return
+                
+            admin_text = (
+                "Админ панель\n\n"
+                "Управление пользователями:\n"
+                "/ban [id] [время] [причина] - бан\n"
+                "/unban [id] - разбан\n"
+                "/users - список пользователей\n\n"
+                "Промокоды:\n"
+                "/add_promo [код] [сумма] - создать промокод\n"
+                "/stats - статистика промокодов\n\n"
+                "Логи и статистика:\n"
+                "/adminlogs [дни] - логи админов\n"
+                "/clearlogs - очистить логи\n\n"
+                "Управление админами:\n"
+                "/addadmin [id] - добавить админа\n"
+                "/removeadmin [id] - удалить админа\n"
+                "/admins - список админов\n"
+                "/myrights - мои права\n\n"
+                "Система:\n"
+                "/sendall [сообщение] - рассылка\n"
+                "/restart - перезапуск\n"
+                "/debug - отладка"
+            )
+            bot.send_message(user_id, admin_text)
+            log_admin_action(message.from_user, "открыл админ панель")
+            
+        except Exception as e:
+            logger.error(f"Error in /admin: {e}")
+
+    @bot.message_handler(commands=['add_promo'])
+    def add_promo_command(message):
+        try:
+            user_id = message.from_user.id
+            
+            if not is_admin(user_id):
+                bot.send_message(user_id, "❌ У вас нет прав для этой команды")
+                return
+                
+            args = message.text.split()[1:]
+            if len(args) < 2:
+                bot.send_message(user_id, "❌ Использование: /add_promo [код] [сумма]")
+                return
+                
+            promocode = args[0]
+            try:
+                value = int(args[1])
+            except ValueError:
+                bot.send_message(user_id, "❌ Сумма должна быть числом")
+                return
+                
+            if value <= 0:
+                bot.send_message(user_id, "❌ Сумма должна быть положительной")
+                return
+                
+            if add_promocode(promocode, value):
+                bot.send_message(user_id, f"✅ Промокод {promocode} на {value} монет создан!")
+                log_admin_action(message.from_user, f"создал промокод {promocode} на {value} монет")
+            else:
+                bot.send_message(user_id, "❌ Ошибка при создании промокода")
+                
+        except Exception as e:
+            logger.error(f"Error in /add_promo: {e}")
+
+    @bot.message_handler(commands=['adminlogs'])
+    def admin_logs_command(message):
+        try:
+            user_id = message.from_user.id
+            
+            if not is_admin(user_id):
+                bot.send_message(user_id, "❌ У вас нет прав для этой команды")
+                return
+                
+            args = message.text.split()[1:]
+            days = 7
+            if args:
+                try:
+                    days = int(args[0])
+                    if days <= 0 or days > 365:
+                        bot.send_message(user_id, "❌ Диапазон дней: 1-365")
+                        return
+                except ValueError:
+                    bot.send_message(user_id, "❌ Количество дней должно быть числом")
+                    return
+            
+            logs = get_admin_logs(days=days)
+            if not logs:
+                bot.send_message(user_id, f"📊 Логов за {days} дней не найдено")
+                return
+                
+            formatted_logs = format_admin_logs_for_display(logs, days=days)
+            
+            if len(formatted_logs) > 4000:
+                parts = [formatted_logs[i:i+4000] for i in range(0, len(formatted_logs), 4000)]
+                for part in parts[:3]:
+                    bot.send_message(user_id, f"```\n{part}\n```", parse_mode='Markdown')
+                if len(parts) > 3:
+                    bot.send_message(user_id, f"... и еще {len(parts)-3} частей")
+            else:
+                bot.send_message(user_id, f"```\n{formatted_logs}\n```", parse_mode='Markdown')
+                
+            log_admin_action(message.from_user, f"просмотрел логи за {days} дней")
+            
+        except Exception as e:
+            logger.error(f"Error in /adminlogs: {e}")
+
+    @bot.message_handler(commands=['restart'])
+    def restart_command(message):
+        try:
+            user_id = message.from_user.id
+            
+            if not is_admin(user_id):
+                bot.send_message(user_id, "❌ У вас нет прав для этой команды")
+                return
+                
+            bot.send_message(user_id, "🔄 Перезапуск бота...")
+            logger.info(f"Admin {user_id} initiated restart")
+            log_admin_action(message.from_user, "перезапустил бота")
+            
+            import os
+            import sys
+            os.execv(sys.executable, [sys.executable] + sys.argv)
+            
+        except Exception as e:
+            logger.error(f"Error in /restart: {e}")
+
+    @bot.message_handler(commands=['debug'])
+    def debug_command(message):
+        try:
+            user_id = message.from_user.id
+            
+            if not is_admin(user_id):
+                bot.send_message(user_id, "❌ У вас нет прав для этой команды")
+                return
+                
+            user_count = get_user_count()
+            admins = get_all_admins()
+            stats = get_promocode_stats()
+            
+            debug_info = (
+                "Информация о системе:\n\n"
+                f"Пользователей: {user_count}\n"
+                f"Админов: {len(admins)}\n"
+                f"Промокодов: {stats['total']} (использовано: {stats['used']}, доступно: {stats['available']})\n"
+                f"Время: {get_current_time()}\n"
+                f"Режим: {'WEBHOOK' if os.environ.get('RENDER') else 'POLLING'}"
+            )
+            bot.send_message(user_id, debug_info)
+            log_admin_action(message.from_user, "запросил отладочную информацию")
+            
+        except Exception as e:
+            logger.error(f"Error in /debug: {e}")
+
+    @bot.message_handler(commands=['myrights'])
+    def my_rights_command(message):
+        try:
+            user_id = message.from_user.id
+            
+            if not is_admin(user_id):
+                bot.send_message(user_id, "❌ Вы не являетесь администратором")
+                return
+                
+            is_main = is_main_admin(user_id)
+            rights_text = "👑 Вы главный администратор" if is_main else "⚡ Вы администратор"
+            bot.send_message(user_id, rights_text)
+            log_admin_action(message.from_user, "проверил свои права")
+            
+        except Exception as e:
+            logger.error(f"Error in /myrights: {e}")
+
+    @bot.message_handler(commands=['sendall'])
+    def broadcast_command(message):
+        try:
+            user_id = message.from_user.id
+            
+            if not is_admin(user_id):
+                bot.send_message(user_id, "❌ У вас нет прав для этой команды")
+                return
+                
+            args = message.text.split()[1:]
+            if not args:
+                bot.send_message(user_id, "❌ Использование: /sendall [сообщение]")
+                return
+                
+            broadcast_text = ' '.join(args)
+            users = get_all_users()
+            success_count = 0
+            total_count = len(users)
+            
+            bot.send_message(user_id, f"📢 Начинаю рассылку для {total_count} пользователей...")
+            
+            for user in users:
+                try:
+                    user_id_to_send = user[0]
+                    bot.send_message(user_id_to_send, broadcast_text)
+                    success_count += 1
+                    time.sleep(0.1)  # Задержка чтобы не превысить лимиты
+                except Exception as e:
+                    logger.error(f"Failed to send broadcast to {user[0]}: {e}")
+                    
+            bot.send_message(user_id, f"✅ Рассылка завершена\nУспешно: {success_count}/{total_count}")
+            log_admin_action(message.from_user, f"сделал рассылку: {broadcast_text[:50]}...")
+            
+        except Exception as e:
+            logger.error(f"Error in /sendall: {e}")
+
+    @bot.message_handler(commands=['ban'])
+    def ban_command(message):
+        try:
+            user_id = message.from_user.id
+            
+            if not is_admin(user_id):
+                bot.send_message(user_id, "❌ У вас нет прав для этой команды")
+                return
+                
+            args = message.text.split()[1:]
+            if len(args) < 1:
+                bot.send_message(user_id, "❌ Использование: /ban [id] [время_в_секундах] [причина]")
+                return
+                
+            target_id = int(args[0])
+            duration = None
+            reason = "Не указана"
+            
+            if len(args) >= 2:
+                try:
+                    duration = int(args[1])
+                    if duration <= 0:
+                        bot.send_message(user_id, "❌ Время должно быть положительным числом")
+                        return
+                except ValueError:
+                    bot.send_message(user_id, "❌ Время должно быть числом")
+                    return
+                    
+            if len(args) >= 3:
+                reason = ' '.join(args[2:])
+                
+            ban_type = "temporary" if duration else "permanent"
+            
+            if ban_user(target_id, ban_type, duration, reason, user_id):
+                if duration:
+                    time_str = format_time_left(duration)
+                    bot.send_message(user_id, f"✅ Пользователь {target_id} забанен на {time_str}\nПричина: {reason}")
+                else:
+                    bot.send_message(user_id, f"✅ Пользователь {target_id} забанен навсегда\nПричина: {reason}")
+                    
+                try:
+                    if duration:
+                        bot.send_message(target_id, f"🚫 Вы забанены на {time_str}\nПричина: {reason}")
+                    else:
+                        bot.send_message(target_id, f"🚫 Вы забанены навсегда\nПричина: {reason}")
+                except:
+                    pass
+                    
+                log_admin_action(message.from_user, f"забанил пользователя {target_id}", f"время: {duration} сек, причина: {reason}")
+            else:
+                bot.send_message(user_id, "❌ Ошибка при бане пользователя")
+                
+        except Exception as e:
+            logger.error(f"Error in /ban: {e}")
+
+    @bot.message_handler(commands=['unban'])
+    def unban_command(message):
+        try:
+            user_id = message.from_user.id
+            
+            if not is_admin(user_id):
+                bot.send_message(user_id, "❌ У вас нет прав для этой команды")
+                return
+                
+            args = message.text.split()[1:]
+            if len(args) < 1:
+                bot.send_message(user_id, "❌ Использование: /unban [id]")
+                return
+                
+            target_id = int(args[0])
+            
+            if unban_user(target_id):
+                bot.send_message(user_id, f"✅ Пользователь {target_id} разбанен")
+                
+                try:
+                    bot.send_message(target_id, "✅ Вы были разбанены")
+                except:
+                    pass
+                    
+                log_admin_action(message.from_user, f"разбанил пользователя {target_id}")
+            else:
+                bot.send_message(user_id, "❌ Ошибка при разбане пользователя")
+                
+        except Exception as e:
+            logger.error(f"Error in /unban: {e}")
+
+    @bot.message_handler(commands=['addadmin'])
+    def add_admin_command(message):
+        try:
+            user_id = message.from_user.id
+            
+            if not is_main_admin(user_id):
+                bot.send_message(user_id, "❌ Только главный администратор может добавлять админов")
+                return
+                
+            args = message.text.split()[1:]
+            if len(args) < 1:
+                bot.send_message(user_id, "❌ Использование: /addadmin [id]")
+                return
+                
+            target_id = int(args[0])
+            
+            # Получаем информацию о пользователе
+            try:
+                target_user = bot.get_chat(target_id)
+                if add_admin(target_id, target_user.username, target_user.first_name):
+                    bot.send_message(user_id, f"✅ Пользователь {target_user.first_name} ({target_id}) добавлен как администратор")
+                    log_admin_action(message.from_user, f"добавил администратора {target_id}")
+                else:
+                    bot.send_message(user_id, "❌ Ошибка при добавлении администратора")
+            except Exception as e:
+                bot.send_message(user_id, f"❌ Не удалось найти пользователя с ID {target_id}")
+                
+        except Exception as e:
+            logger.error(f"Error in /addadmin: {e}")
+
+    @bot.message_handler(commands=['removeadmin'])
+    def remove_admin_command(message):
+        try:
+            user_id = message.from_user.id
+            
+            if not is_main_admin(user_id):
+                bot.send_message(user_id, "❌ Только главный администратор может удалять админов")
+                return
+                
+            args = message.text.split()[1:]
+            if len(args) < 1:
+                bot.send_message(user_id, "❌ Использование: /removeadmin [id]")
+                return
+                
+            target_id = int(args[0])
+            
+            if remove_admin(target_id):
+                bot.send_message(user_id, f"✅ Администратор {target_id} удален")
+                log_admin_action(message.from_user, f"удалил администратора {target_id}")
+            else:
+                bot.send_message(user_id, "❌ Ошибка при удалении администратора")
+                
+        except Exception as e:
+            logger.error(f"Error in /removeadmin: {e}")
+
+    @bot.message_handler(commands=['users'])
+    def users_command(message):
+        try:
+            user_id = message.from_user.id
+            
+            if not is_admin(user_id):
+                bot.send_message(user_id, "❌ У вас нет прав для этой команды")
+                return
+                
+            users = get_all_users()
+            if not users:
+                bot.send_message(user_id, "📊 Пользователей нет")
+                return
+                
+            users_text = f"📊 Всего пользователей: {len(users)}\n\n"
+            for i, user in enumerate(users[:50], 1):  # Показываем первые 50
+                user_id, username, first_name, last_name = user
+                name = f"{first_name} {last_name}" if last_name else first_name
+                users_text += f"{i}. {name} (@{username}) - {user_id}\n"
+                
+            if len(users) > 50:
+                users_text += f"\n... и еще {len(users) - 50} пользователей"
+                
+            bot.send_message(user_id, users_text)
+            log_admin_action(message.from_user, "просмотрел список пользователей")
+            
+        except Exception as e:
+            logger.error(f"Error in /users: {e}")
+
+    @bot.message_handler(commands=['admins'])
+    def admins_command(message):
+        try:
+            user_id = message.from_user.id
+            
+            if not is_admin(user_id):
+                bot.send_message(user_id, "❌ У вас нет прав для этой команды")
+                return
+                
+            admins = get_all_admins()
+            admins_text = "👑 Список администраторов:\n\n"
+            
+            for admin in admins:
+                admin_id, username, first_name, is_main = admin
+                role = "Главный" if is_main else "Обычный"
+                admins_text += f"{first_name} (@{username}) - {admin_id} - {role}\n"
+                
+            bot.send_message(user_id, admins_text)
+            log_admin_action(message.from_user, "просмотрел список администраторов")
+            
+        except Exception as e:
+            logger.error(f"Error in /admins: {e}")
+
+    @bot.message_handler(commands=['stats'])
+    def stats_command(message):
+        try:
+            user_id = message.from_user.id
+            
+            if not is_admin(user_id):
+                bot.send_message(user_id, "❌ У вас нет прав для этой команды")
+                return
+                
+            user_count = get_user_count()
+            admins = get_all_admins()
+            stats = get_promocode_stats()
+            
+            stats_text = (
+                "📊 Статистика бота:\n\n"
+                f"👥 Пользователей: {user_count}\n"
+                f"👑 Админов: {len(admins)}\n"
+                f"🎫 Промокодов всего: {stats['total']}\n"
+                f"✅ Использовано: {stats['used']}\n"
+                f"🆓 Доступно: {stats['available']}\n"
+                f"🕒 Время сервера: {get_current_time()}"
+            )
+            bot.send_message(user_id, stats_text)
+            log_admin_action(message.from_user, "просмотрел статистику")
+            
+        except Exception as e:
+            logger.error(f"Error in /stats: {e}")
+
+    @bot.message_handler(commands=['clearlogs'])
+    def clear_logs_command(message):
+        try:
+            user_id = message.from_user.id
+            
+            if not is_admin(user_id):
+                bot.send_message(user_id, "❌ У вас нет прав для этой команды")
+                return
+                
+            try:
+                with open(ADMIN_LOGFILE, 'w', encoding='utf-8') as f:
+                    f.write('')
+                bot.send_message(user_id, "✅ Логи администраторов очищены")
+                log_admin_action(message.from_user, "очистил логи администраторов")
+            except Exception as e:
+                bot.send_message(user_id, "❌ Ошибка при очистке логов")
+                logger.error(f"Error clearing logs: {e}")
+                
+        except Exception as e:
+            logger.error(f"Error in /clearlogs: {e}")
+
+    # Обработка кнопок
+    @bot.message_handler(func=lambda message: message.text == "📞 Попросить связаться со мной.")
+    def request_contact(message):
+        try:
+            user_id = message.from_user.id
+            
+            ban_info = is_banned(user_id)
+            if ban_info:
+                bot.send_message(user_id, "🚫 Вы забанены и не можете использовать эту функцию")
+                return
+                
+            cooldown = check_button_cooldown(user_id)
+            if cooldown > 0:
+                bot.send_message(user_id, f"⏳ Кнопка будет доступна через {int(cooldown)} секунд")
+                return
+                
+            # Убираем кнопку
+            bot.send_message(user_id, "✅ Ваш запрос отправлен! Ожидайте ответа.", reply_markup=ReplyKeyboardRemove())
+            
+            # Восстанавливаем кнопку через 30 секунд
+            restore_button(user_id)
+            
+            # Уведомляем админов
+            admins = get_all_admins()
+            user_info = f"@{message.from_user.username}" if message.from_user.username else message.from_user.first_name
+            
+            for admin in admins:
+                try:
+                    admin_id = admin[0]
+                    bot.send_message(admin_id, f"📞 Пользователь {user_info} (ID: {user_id}) просит связаться с ним")
+                except Exception as e:
+                    logger.error(f"Failed to notify admin {admin[0]} about contact request: {e}")
+                    
+            log_user_action(message.from_user, "запросил связь")
+            
+        except Exception as e:
+            logger.error(f"Error in contact request: {e}")
+
+    @bot.message_handler(func=lambda message: message.text == "🎰 Запустить бурмалду")
+    def start_casino_button(message):
+        play_casino(message)
+
+    @bot.message_handler(func=lambda message: message.text == "🎁 Запросить промокод")
+    def request_promo_button(message):
+        request_promo(message)
+
+    # Обработка callback кнопок
+    @bot.callback_query_handler(func=lambda call: True)
+    def handle_callback(call):
+        try:
+            user_id = call.from_user.id
+            
+            if not is_admin(user_id):
+                bot.answer_callback_query(call.id, "❌ У вас нет прав для этого действия")
+                return
+                
+            if call.data.startswith('unban_'):
+                target_id = int(call.data.split('_')[1])
+                
+                if unban_user(target_id):
+                    bot.answer_callback_query(call.id, "✅ Пользователь разбанен")
+                    bot.edit_message_text(
+                        f"✅ Пользователь {target_id} разбанен администратором {call.from_user.first_name}",
+                        chat_id=call.message.chat.id,
+                        message_id=call.message.message_id
+                    )
+                    
+                    try:
+                        bot.send_message(target_id, "✅ Вы были разбанены администратором")
+                    except:
+                        pass
+                        
+                    log_admin_action(call.from_user, f"разбанил пользователя {target_id} через кнопку")
+                else:
+                    bot.answer_callback_query(call.id, "❌ Ошибка при разбане")
+                    
+        except Exception as e:
+            logger.error(f"Error in callback handler: {e}")
+
+    # Обработка обычных сообщений (пересылка админам)
+    @bot.message_handler(content_types=['text', 'photo', 'video', 'document', 'audio', 'voice'])
+    def forward_to_admins(message):
+        try:
+            user_id = message.from_user.id
+            
+            ban_info = is_banned(user_id)
+            if ban_info:
+                bot.send_message(user_id, "🚫 Вы забанены и не можете отправлять сообщения")
+                return
+                
+            # Проверяем кулдаун
+            cooldown = check_cooldown(user_id)
+            if cooldown > 0:
+                bot.send_message(user_id, f"⏳ Подождите {int(cooldown)} секунд перед отправкой следующего сообщения")
+                return
+                
+            register_user(user_id,
+                         message.from_user.username,
+                         message.from_user.first_name,
+                         message.from_user.last_name)
+            
+            # Пересылаем сообщение всем админам
+            admins = get_all_admins()
+            user_info = f"@{message.from_user.username}" if message.from_user.username else message.from_user.first_name
+            
+            for admin in admins:
+                try:
+                    admin_id = admin[0]
+                    
+                    # Создаем клавиатуру для ответа
+                    markup = InlineKeyboardMarkup()
+                    markup.add(InlineKeyboardButton("📨 Ответить", callback_data=f"reply_{user_id}"))
+                    
+                    # Пересылаем сообщение в зависимости от типа
+                    if message.content_type == 'text':
+                        bot.send_message(admin_id, 
+                                       f"📩 Сообщение от {user_info} (ID: {user_id}):\n\n{message.text}",
+                                       reply_markup=markup)
+                    else:
+                        # Для медиа-сообщений сначала отправляем текст, потом медиа
+                        caption = f"📩 Сообщение от {user_info} (ID: {user_id})"
+                        if message.caption:
+                            caption += f"\n\n{message.caption}"
+                            
+                        if message.content_type == 'photo':
+                            bot.send_photo(admin_id, message.photo[-1].file_id, caption=caption, reply_markup=markup)
+                        elif message.content_type == 'video':
+                            bot.send_video(admin_id, message.video.file_id, caption=caption, reply_markup=markup)
+                        elif message.content_type == 'document':
+                            bot.send_document(admin_id, message.document.file_id, caption=caption, reply_markup=markup)
+                        elif message.content_type == 'audio':
+                            bot.send_audio(admin_id, message.audio.file_id, caption=caption, reply_markup=markup)
+                        elif message.content_type == 'voice':
+                            bot.send_voice(admin_id, message.voice.file_id, caption=caption, reply_markup=markup)
+                            
+                except Exception as e:
+                    logger.error(f"Failed to forward message to admin {admin[0]}: {e}")
+                    
+            bot.send_message(user_id, "✅ Ваше сообщение отправлено!")
+            log_user_action(message.from_user, "отправил сообщение")
+            
+        except Exception as e:
+            logger.error(f"Error in message forwarding: {e}")
 
 # Webhook версия для Render
 if os.environ.get('RENDER'):
