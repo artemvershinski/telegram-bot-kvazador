@@ -1080,24 +1080,34 @@ def start_bot_loop():
             logger.info("Restarting polling in 10 seconds...")
             time.sleep(10)
 
-if __name__ == "__main__":
-    # Сбрасываем все предыдущие соединения
-    try:
-        bot.remove_webhook()
-        time.sleep(2)
-    except:
-        pass
+# Webhook версия для Render
+if os.environ.get('RENDER'):
+    @app.route('/webhook', methods=['POST'])
+    def webhook():
+        if request.headers.get('content-type') == 'application/json':
+            json_string = request.get_data().decode('utf-8')
+            update = telebot.types.Update.de_json(json_string)
+            bot.process_new_updates([update])
+            return ''
+        else:
+            return 'Invalid content type', 400
     
-    keep_alive()
+    # ЯДЕРНЫЙ УДАР
+    bot.remove_webhook()
+    time.sleep(2)
+    bot.set_webhook(url=f"https://{os.environ.get('RENDER_EXTERNAL_HOSTNAME')}/webhook")
     
-    # Ждем 10 секунд перед запуском polling
-    logger.info("Waiting 10 seconds for old instances to die...")
-    time.sleep(10)
+    logger.info("🤖 Webhook configured - bot is ready!")
     
-    logger.info("Starting bot polling...")
-    try:
-        start_bot_loop()
-    except KeyboardInterrupt:
-        logger.info("Bot stopped by KeyboardInterrupt")
-    except Exception:
-        logger.exception("Fatal error in main")
+    # Flask просто крутится, бот работает через webhook
+    if __name__ == "__main__":
+        keep_alive()
+        
+else:
+    # Локально используем polling
+    if __name__ == "__main__":
+        keep_alive()
+        try:
+            bot.infinity_polling()
+        except Exception as e:
+            logger.exception("Polling error: %s", e)
