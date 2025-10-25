@@ -721,6 +721,24 @@ def get_all_admins():
     
     return safe_db_execute(_get_admins)
 
+def get_top_users(limit=10):
+    """Возвращает топ пользователей по балансу"""
+    def _get_top():
+        conn = get_db_connection()
+        c = conn.cursor()
+        c.execute("""
+            SELECT u.user_id, u.username, u.first_name, ub.balance 
+            FROM users u 
+            JOIN user_balance ub ON u.user_id = ub.user_id 
+            ORDER BY ub.balance DESC 
+            LIMIT %s
+        """, (limit,))
+        users = c.fetchall()
+        conn.close()
+        return users
+    
+    return safe_db_execute(_get_top)
+
 # ==================== СИСТЕМА БАНОВ ====================
 
 def ban_user(user_id, ban_type, duration_seconds=None, reason="", banned_by=None):
@@ -969,43 +987,42 @@ def get_bet_keyboard():
         KeyboardButton("100"),
         KeyboardButton("500"),
         KeyboardButton("1000"),
+        KeyboardButton("Всё"),
         KeyboardButton("🔙 Назад")
     )
     return markup
 
+def get_main_keyboard():
+    """Главная клавиатура меню"""
+    markup = ReplyKeyboardMarkup(resize_keyboard=True)
+    markup.add(KeyboardButton("🎰 Запустить бурмалду"))
+    markup.add(KeyboardButton("🎁 Запросить промокод"))
+    return markup
+
 def calculate_win(lines, bet):
-    """Рассчитывает выигрыш по линиям"""
     total_win = 0
     winning_lines = []
     
-    # Коэффициенты для разных комбинаций
+    # Коэффициенты для разных комбинаций (адекватные)
     multipliers = {
-        "🍒": {"3": 3, "2": 1},
-        "🍋": {"3": 4, "2": 2}, 
-        "🍊": {"3": 5, "2": 2},
-        "🍇": {"3": 6, "2": 3},
-        "💎": {"3": 10, "2": 5},
-        "7️⃣": {"3": 20, "2": 10}
+        "🍒": {"3": 1.5},   # ×2
+        "🍋": {"3": 2},   # ×3  
+        "🍊": {"3": 3},   # ×4
+        "🍇": {"3": 4},   # ×5
+        "💎": {"3": 6},   # ×8
+        "7️⃣": {"3": 12}  # ×15
     }
     
     for i, line in enumerate(lines, 1):
         symbols = line
         
-        # Проверяем комбинации
-        if symbols[0] == symbols[1] == symbols[2]:  # 3 одинаковых
+        # Проверяем только 3 одинаковых символа
+        if symbols[0] == symbols[1] == symbols[2]:
             symbol = symbols[0]
             if symbol in multipliers:
                 win_amount = bet * multipliers[symbol]["3"]
                 total_win += win_amount
                 winning_lines.append(f"Линия {i}: {symbol*3} x{multipliers[symbol]['3']} = {win_amount}")
-        
-        # Проверяем 2 одинаковых (первые два)
-        elif symbols[0] == symbols[1]:
-            symbol = symbols[0]
-            if symbol in multipliers:
-                win_amount = bet * multipliers[symbol]["2"]
-                total_win += win_amount
-                winning_lines.append(f"Линия {i}: {symbol*2} x{multipliers[symbol]['2']} = {win_amount}")
     
     return total_win, winning_lines
 
@@ -1156,12 +1173,14 @@ if bot:
                 "Запросите промокод через /get_promo и подождите пока его создаст модератор.\n"
                 "Активируйте его через /promo ПРОМОКОД\n"
                 "Каждый полученный промокод можно использовать только 1 раз!\n\n"
+                "Доступные команды:\n"
+                "/casino - играть в казино\n"
+                "/balance - проверить баланс\n"
+                "/top - топ игроков\n"
+                "/help - помощь"
             )
 
-            markup = ReplyKeyboardMarkup(resize_keyboard=True)
-            markup.add(KeyboardButton("🎰 Запустить бурмалду"))
-            markup.add(KeyboardButton("🎁 Запросить промокод"))
-            bot.send_message(user_id, welcome_text, reply_markup=markup)
+            bot.send_message(user_id, welcome_text, reply_markup=get_main_keyboard())
             
             log_user_action(message.from_user, "start")
             
@@ -1182,6 +1201,7 @@ if bot:
                     "/help - эта справка\n"
                     "/casino - играть в казино\n"
                     "/balance - проверить баланс\n"
+                    "/top - топ игроков\n"
                     "/promo [код] - активировать промокод\n"
                     "/get_promo - запросить промокод\n"
                     "/unban - запросить разбан\n\n"
@@ -1209,6 +1229,7 @@ if bot:
                     "/help - эта справка\n"
                     "/casino - играть в казино\n"
                     "/balance - проверить баланс\n"
+                    "/top - топ игроков\n"
                     "/promo [код] - активировать промокод\n"
                     "/get_promo - запросить промокод\n"
                     "/unban - запросить разбан"
@@ -1237,6 +1258,36 @@ if bot:
         except Exception as e:
             logger.error(f"Error in /balance: {e}")
 
+    @bot.message_handler(commands=['top'])
+    def show_top(message):
+        try:
+            user_id = message.from_user.id
+            
+            ban_info = is_banned(user_id)
+            if ban_info:
+                bot.send_message(user_id, "🚫 Вы забанены и не можете использовать эту команду")
+                return
+                
+            top_users = get_top_users(10)
+            
+            if not top_users:
+                bot.send_message(user_id, "📊 Пока нет данных о пользователях")
+                return
+                
+            top_text = "🏆 ТОП-10 ИГРОКОВ ПО БАЛАНСУ 🏆\n\n"
+            
+            for i, user in enumerate(top_users, 1):
+                user_id, username, first_name, balance = user
+                name = f"@{username}" if username else first_name
+                medal = "🥇" if i == 1 else "🥈" if i == 2 else "🥉" if i == 3 else f"{i}."
+                top_text += f"{medal} {name} - {balance:,} монет\n"
+            
+            bot.send_message(user_id, top_text)
+            log_user_action(message.from_user, "просмотрел топ игроков")
+            
+        except Exception as e:
+            logger.error(f"Error in /top: {e}")
+
     @bot.message_handler(commands=['casino'])
     def casino_start(message):
         try:
@@ -1264,21 +1315,22 @@ if bot:
         except Exception as e:
             logger.error(f"Error in /casino: {e}")
 
-    @bot.message_handler(func=lambda message: message.text in ["100", "500", "1000", "🔙 Назад"] and user_bet_mode.get(message.from_user.id))
+    @bot.message_handler(func=lambda message: message.text in ["100", "500", "1000", "Всё", "🔙 Назад"] and user_bet_mode.get(message.from_user.id))
     def handle_bet_selection(message):
         try:
             user_id = message.from_user.id
             
             if message.text == "🔙 Назад":
                 user_bet_mode[user_id] = False
-                markup = ReplyKeyboardMarkup(resize_keyboard=True)
-                markup.add(KeyboardButton("🎰 Запустить бурмалду"))
-                markup.add(KeyboardButton("🎁 Запросить промокод"))
-                bot.send_message(user_id, "✅ Возвращаемся в главное меню", reply_markup=markup)
+                bot.send_message(user_id, "✅ Возвращаемся в главное меню", reply_markup=get_main_keyboard())
                 return
             
             balance = get_user_balance(user_id)
-            bet_amount = int(message.text)
+            
+            if message.text == "Всё":
+                bet_amount = balance
+            else:
+                bet_amount = int(message.text)
             
             if bet_amount > balance:
                 bot.send_message(user_id, f"❌ Недостаточно средств! Ваш баланс: {balance} монет")
@@ -1318,13 +1370,16 @@ if bot:
                 result_text += f"💎 Новый баланс: {new_balance} монет\n"
                 result_text += "❌ Выигрышных линий нет"
             
-            # Отправляем результат
-            bot.send_message(user_id, result_text, reply_markup=get_bet_keyboard())
+            # ВОЗВРАЩАЕМ ГЛАВНОЕ МЕНЮ после результата
+            bot.send_message(user_id, result_text, reply_markup=get_main_keyboard())
+            user_bet_mode[user_id] = False  # Выходим из режима выбора ставки
+            
             log_user_action(message.from_user, f"сыграл в казино: ставка {bet_amount}, выигрыш {total_win}")
             
         except Exception as e:
             logger.error(f"Error in bet selection: {e}")
-            bot.send_message(user_id, "❌ Ошибка при запуске слотов", reply_markup=get_bet_keyboard())
+            bot.send_message(user_id, "❌ Ошибка при запуске слотов", reply_markup=get_main_keyboard())
+            user_bet_mode[user_id] = False
 
     @bot.message_handler(commands=['promo'])
     def use_promo(message):
