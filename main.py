@@ -727,7 +727,7 @@ def get_top_users(limit=10):
         conn = get_db_connection()
         c = conn.cursor()
         c.execute("""
-            SELECT u.user_id, u.username, u.first_name, ub.balance 
+            SELECT u.user_id, u.username, u.first_name, u.last_name, ub.balance 
             FROM users u 
             JOIN user_balance ub ON u.user_id = ub.user_id 
             ORDER BY ub.balance DESC 
@@ -1160,12 +1160,9 @@ if bot:
 
             welcome_text = (
                 "🎰 Добро пожаловать в KVZDR HUB! 🎰\n\n"
-                "Это бот-пересыльщик сообщений для kvazador!\n\n"
-                "Виртуальная бурмалда:\n"
+                "Для запуска казино используйте /casino\n"
                 f"Ваш текущий баланс: {get_user_balance(user_id)} монет\n"
-                "Пополнить баланс можно через промокоды\n"
-                "Для запроса промокода используйте /get_promo\n"
-                "Для запуска казино используйте /casino\n\n"
+                "Пополнить баланс можно через промокоды\n\n"
                 "📨 Связь с kvazador:\n"
                 "Для связи просто отправьте сообщение здесь. "
                 "Ответ может поступить через бота или в ЛС.\n\n"
@@ -1215,6 +1212,8 @@ if bot:
                     "/sendall [сообщение] - рассылка\n"
                     "/ban [id] [время] [причина] - бан\n"
                     "/unban [id] - разбан\n"
+                    "/reply [id] - ответить пользователю\n"
+                    "/stop - выйти из режима ответа\n"
                     "/addadmin [id] - добавить админа\n"
                     "/removeadmin [id] - удалить админа\n"
                     "/users - список пользователей\n"
@@ -1277,7 +1276,7 @@ if bot:
             top_text = "🏆 ТОП-10 ИГРОКОВ ПО БАЛАНСУ 🏆\n\n"
             
             for i, user in enumerate(top_users, 1):
-                user_id, username, first_name, balance = user
+                user_id, username, first_name, last_name, balance = user
                 name = f"@{username}" if username else first_name
                 medal = "🥇" if i == 1 else "🥈" if i == 2 else "🥉" if i == 3 else f"{i}."
                 top_text += f"{medal} {name} - {balance:,} монет\n"
@@ -1287,7 +1286,7 @@ if bot:
             
         except Exception as e:
             logger.error(f"Error in /top: {e}")
-
+        
     @bot.message_handler(commands=['casino'])
     def casino_start(message):
         try:
@@ -1493,6 +1492,8 @@ if bot:
                 "Управление пользователями:\n"
                 "/ban [id] [время] [причина] - бан\n"
                 "/unban [id] - разбан\n"
+                "/reply [id] - ответить пользователю\n"
+                "/stop - выйти из режима ответа\n"
                 "/users - список пользователей\n\n"
                 "Промокоды:\n"
                 "/add_promo [код] [сумма] - создать промокод\n"
@@ -1515,6 +1516,87 @@ if bot:
             
         except Exception as e:
             logger.error(f"Error in /admin: {e}")
+
+    @bot.message_handler(commands=['reply'])
+    def start_reply_mode(message):
+        try:
+            user_id = message.from_user.id
+            
+            if not is_admin(user_id):
+                bot.send_message(user_id, "❌ У вас нет прав для этой команды")
+                return
+                
+            args = message.text.split()[1:]
+            if len(args) < 1:
+                bot.send_message(user_id, "❌ Использование: /reply [ID_пользователя]")
+                return
+                
+            target_id = int(args[0])
+            user_reply_mode[user_id] = target_id
+            
+            bot.send_message(user_id, 
+                           f"💬 Режим ответа включен для пользователя {target_id}\n"
+                           f"Отправьте сообщение, которое будет переслано пользователю.\n"
+                           f"Для выхода из режима используйте /stop")
+            log_admin_action(message.from_user, f"включил режим ответа для пользователя {target_id}")
+            
+        except Exception as e:
+            logger.error(f"Error in /reply: {e}")
+
+    @bot.message_handler(commands=['stop'])
+    def stop_reply_mode(message):
+        try:
+            user_id = message.from_user.id
+            
+            if user_id in user_reply_mode:
+                target_id = user_reply_mode.pop(user_id)
+                bot.send_message(user_id, f"✅ Режим ответа отключен для пользователя {target_id}")
+                log_admin_action(message.from_user, f"отключил режим ответа")
+            else:
+                bot.send_message(user_id, "❌ Режим ответа не активен")
+                
+        except Exception as e:
+            logger.error(f"Error in /stop: {e}")
+
+    # Обработка сообщений в режиме ответа
+    @bot.message_handler(func=lambda message: message.from_user.id in user_reply_mode and not message.text.startswith('/'))
+    def handle_reply_message(message):
+        try:
+            admin_id = message.from_user.id
+            target_id = user_reply_mode[admin_id]
+            
+            # Пересылаем сообщение пользователю
+            try:
+                if message.content_type == 'text':
+                    bot.send_message(target_id, f"📨 Ответ от администратора:\n\n{message.text}")
+                    bot.send_message(admin_id, f"✅ Ответ отправлен пользователю {target_id}")
+                else:
+                    # Для медиа-сообщений
+                    caption = "📨 Ответ от администратора"
+                    if message.caption:
+                        caption += f"\n\n{message.caption}"
+                        
+                    if message.content_type == 'photo':
+                        bot.send_photo(target_id, message.photo[-1].file_id, caption=caption)
+                    elif message.content_type == 'video':
+                        bot.send_video(target_id, message.video.file_id, caption=caption)
+                    elif message.content_type == 'document':
+                        bot.send_document(target_id, message.document.file_id, caption=caption)
+                    elif message.content_type == 'audio':
+                        bot.send_audio(target_id, message.audio.file_id, caption=caption)
+                    elif message.content_type == 'voice':
+                        bot.send_voice(target_id, message.voice.file_id, caption=caption)
+                    
+                    bot.send_message(admin_id, f"✅ Медиа-ответ отправлен пользователю {target_id}")
+                    
+                log_admin_action(message.from_user, f"отправил ответ пользователю {target_id}")
+                
+            except Exception as e:
+                bot.send_message(admin_id, f"❌ Не удалось отправить сообщение пользователю {target_id}")
+                logger.error(f"Failed to send reply to {target_id}: {e}")
+                
+        except Exception as e:
+            logger.error(f"Error in reply handler: {e}")
 
     @bot.message_handler(commands=['add_promo'])
     def add_promo_command(message):
@@ -1996,6 +2078,19 @@ if bot:
                 else:
                     bot.answer_callback_query(call.id, "❌ Ошибка при разбане")
                     
+            elif call.data.startswith('reply_'):
+                target_id = int(call.data.split('_')[1])
+                user_reply_mode[user_id] = target_id
+                
+                bot.answer_callback_query(call.id, "💬 Режим ответа включен")
+                bot.send_message(
+                    user_id,
+                    f"💬 Режим ответа включен для пользователя {target_id}\n"
+                    f"Отправьте сообщение, которое будет переслано пользователю.\n"
+                    f"Для выхода из режима используйте /stop"
+                )
+                log_admin_action(call.from_user, f"включил режим ответа для {target_id} через кнопку")
+                
         except Exception as e:
             logger.error(f"Error in callback handler: {e}")
 
@@ -2063,6 +2158,26 @@ if bot:
             
         except Exception as e:
             logger.error(f"Error in message forwarding: {e}")
+
+    # Обработчик неизвестных команд
+    @bot.message_handler(func=lambda message: True)
+    def handle_unknown_commands(message):
+        try:
+            user_id = message.from_user.id
+            
+            # Игнорируем сообщения в режимах ответа
+            if user_id in user_reply_mode or user_id in user_bet_mode:
+                return
+                
+            # Проверяем, начинается ли сообщение с команды
+            if message.text and message.text.startswith('/'):
+                bot.send_message(user_id, 
+                               "❌ Неизвестная команда\n"
+                               "Используйте /help для просмотра доступных команд")
+                log_user_action(message.from_user, f"ввел неизвестную команду: {message.text}")
+                
+        except Exception as e:
+            logger.error(f"Error in unknown command handler: {e}")
 
 # Webhook версия для Render
 if os.environ.get('RENDER'):
