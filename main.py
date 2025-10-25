@@ -1303,7 +1303,7 @@ if bot:
         except Exception as e:
             logger.error(f"Error in /balance: {e}")
 
-    @bot.message_handler(commands=['top'])
+@bot.message_handler(commands=['top'])
     def show_top(message):
         try:
             user_id = message.from_user.id
@@ -1322,11 +1322,13 @@ if bot:
             top_text = "🏆 ТОП-10 ИГРОКОВ ПО БАЛАНСУ 🏆\n\n"
             
             for i, user in enumerate(top_users, 1):
-                user_id, username, first_name, last_name, balance = user
+                # ИСПРАВЛЕНО: используем другие имена переменных
+                top_user_id, username, first_name, last_name, balance = user
                 name = f"@{username}" if username else first_name
                 medal = "🥇" if i == 1 else "🥈" if i == 2 else "🥉" if i == 3 else f"{i}."
                 top_text += f"{medal} {name} - {balance:,} монет\n"
             
+            # ИСПРАВЛЕНО: отправляем оригинальному user_id
             bot.send_message(user_id, top_text)
             log_user_action(message.from_user, "просмотрел топ игроков")
             
@@ -2044,32 +2046,32 @@ if bot:
     @bot.message_handler(commands=['users'])
     def users_command(message):
         try:
-            user_id = message.from_user.id
+            admin_id = message.from_user.id  # ⚠️ ИСПРАВЛЕНО: переименовали переменную
             
-            if not is_admin(user_id):
-                bot.send_message(user_id, "❌ У вас нет прав для этой команды")
+            if not is_admin(admin_id):
+                bot.send_message(admin_id, "❌ У вас нет прав для этой команды")
                 return
                 
             users = get_all_users()
             if not users:
-                bot.send_message(user_id, "📊 Пользователей нет")
+                bot.send_message(admin_id, "📊 Пользователей нет")
                 return
                 
             users_text = f"📊 Всего пользователей: {len(users)}\n\n"
-            for i, user in enumerate(users[:50], 1):  # Показываем первые 50
-                user_id, username, first_name, last_name = user
+            for i, user in enumerate(users[:50], 1):
+                user_id, username, first_name, last_name = user  # ⚠️ Теперь это другая переменная
                 name = f"{first_name} {last_name}" if last_name else first_name
                 users_text += f"{i}. {name} (@{username}) - {user_id}\n"
                 
             if len(users) > 50:
                 users_text += f"\n... и еще {len(users) - 50} пользователей"
                 
-            bot.send_message(user_id, users_text)
+            bot.send_message(admin_id, users_text)  # ⚠️ Используем admin_id
             log_admin_action(message.from_user, "просмотрел список пользователей")
             
         except Exception as e:
             logger.error(f"Error in /users: {e}")
-
+        
     @bot.message_handler(commands=['admins'])
     def admins_command(message):
         try:
