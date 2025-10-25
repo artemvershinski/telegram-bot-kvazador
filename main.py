@@ -12,7 +12,7 @@ from collections import defaultdict
 import random
 import urllib.parse as urlparse
 
-from flask import Flask
+from flask import Flask, request
 import telebot
 from telebot.types import ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove
 
