@@ -1061,11 +1061,13 @@ def get_blackjack_keyboard(game_state="playing"):
         )
     return keyboard
 
-user_blackjack_games = {}
+# Глобальные переменные для хранения состояний
 user_reply_mode = {}
 user_unban_mode = {}
 user_bet_mode = {}
 user_custom_bet_mode = {}
+user_broadcast_mode = {}
+user_support_mode = {}
 
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
@@ -1079,13 +1081,21 @@ def send_welcome(message):
                 time_left = format_time_left(ban_info['time_left'])
                 bot.send_message(user_id, f"🚫 Вы забанены. До разбана осталось: {time_left}")
             return
+        
+        # Удаляем предыдущее сообщение если есть
+        try:
+            if message.message_id:
+                bot.delete_message(user_id, message.message_id)
+        except:
+            pass
+            
         register_user(user_id,
                       message.from_user.username,
                       message.from_user.first_name,
                       message.from_user.last_name)
         balance = get_user_balance(user_id)
         welcome_text = f"Добро пожаловать в WERB HUB\n\nБаланс: {balance} монет"
-        bot.send_message(
+        sent_msg = bot.send_message(
             user_id, 
             welcome_text, 
             reply_markup=get_main_user_keyboard()
@@ -1114,8 +1124,10 @@ def handle_user_callbacks(call):
                 reply_markup=get_promocodes_keyboard()
             )
         elif call.data == 'user_support':
+            # Включаем режим поддержки для пользователя
+            user_support_mode[user_id] = True
             bot.edit_message_text(
-                "Напишите ваше сообщение и отправьте его\nАдминистратор ответит здесь или в ЛС",
+                "💬 Режим поддержки включен\n\nНапишите ваше сообщение и отправьте его\nАдминистратор ответит здесь или в ЛС\n\nДля выхода из режима нажмите 'Назад'",
                 chat_id=call.message.chat.id,
                 message_id=call.message.message_id,
                 reply_markup=get_back_keyboard()
@@ -1171,6 +1183,11 @@ def handle_user_callbacks(call):
                 reply_markup=get_back_keyboard()
             )
         elif call.data == 'user_back_main':
+            # Выключаем все режимы пользователя
+            user_support_mode.pop(user_id, None)
+            user_bet_mode.pop(user_id, None)
+            user_custom_bet_mode.pop(user_id, None)
+            
             welcome_text = f"Добро пожаловать в WERB HUB\n\nБаланс: {balance} монет"
             bot.edit_message_text(
                 welcome_text,
@@ -1355,6 +1372,7 @@ def handle_bet_callbacks(call):
                     reply_markup=get_blackjack_keyboard()
                 )
         elif call.data == 'bet_custom':
+            user_custom_bet_mode[user_id] = True
             bot.edit_message_text(
                 f"Введите свою ставку (число):\n\nМин: 100 монет\nМакс: {balance}",
                 chat_id=call.message.chat.id,
@@ -1467,6 +1485,13 @@ def admin_panel(message):
         if not is_admin(user_id):
             bot.send_message(user_id, "❌ Нет прав")
             return
+            
+        # Удаляем команду админа
+        try:
+            bot.delete_message(user_id, message.message_id)
+        except:
+            pass
+            
         bot.send_message(
             user_id,
             "АДМИН ПАНЕЛЬ",
@@ -1484,6 +1509,10 @@ def handle_admin_callbacks(call):
         return
     try:
         if call.data == 'admin_back_main':
+            # Выключаем все режимы админа
+            user_reply_mode.pop(user_id, None)
+            user_broadcast_mode.pop(user_id, None)
+            
             bot.edit_message_text(
                 "АДМИН ПАНЕЛЬ",
                 chat_id=call.message.chat.id,
@@ -1519,8 +1548,9 @@ def handle_admin_callbacks(call):
                 reply_markup=get_admin_tools_keyboard()
             )
         elif call.data == 'admin_broadcast':
+            user_broadcast_mode[user_id] = True
             bot.edit_message_text(
-                "РАССЫЛКА\n\nВведите текст для рассылки:",
+                "📨 РАССЫЛКА\n\nВведите текст или отправьте медиа для рассылки всем пользователям:\n\nДля отмены нажмите 'Назад'",
                 chat_id=call.message.chat.id,
                 message_id=call.message.message_id,
                 reply_markup=InlineKeyboardMarkup().add(InlineKeyboardButton("Назад", callback_data="admin_back_main"))
@@ -1532,7 +1562,8 @@ def handle_admin_callbacks(call):
                 "/razban ID\n"
                 "/reply ID\n"
                 "/add_promo код сумма\n"
-                "/adminlogs дни"
+                "/adminlogs дни\n\n"
+                "Используйте админ-панель для удобного управления!"
             )
             bot.edit_message_text(
                 help_text,
@@ -1603,39 +1634,113 @@ def handle_admin_callbacks(call):
         logger.error(f"Error in admin callback: {e}")
         bot.answer_callback_query(call.id, "❌ Ошибка")
 
-@bot.message_handler(content_types=['text', 'photo', 'video', 'document', 'audio', 'voice'])
-def forward_to_admins(message):
+# Обработчик для режима рассылки
+@bot.message_handler(func=lambda message: message.from_user.id in user_broadcast_mode and not message.text.startswith('/'))
+def handle_broadcast_message(message):
+    try:
+        admin_id = message.from_user.id
+        if admin_id not in user_broadcast_mode:
+            return
+            
+        # Удаляем сообщение админа
+        try:
+            bot.delete_message(admin_id, message.message_id)
+        except:
+            pass
+            
+        users = get_all_users()
+        success_count = 0
+        fail_count = 0
+        
+        # Отправляем сообщение о начале рассылки
+        progress_msg = bot.send_message(admin_id, f"📨 Начинаем рассылку для {len(users)} пользователей...")
+        
+        for user in users:
+            try:
+                user_id = user[0]
+                if message.content_type == 'text':
+                    bot.send_message(user_id, f"📢 Рассылка от администратора:\n\n{message.text}")
+                elif message.content_type == 'photo':
+                    bot.send_photo(user_id, message.photo[-1].file_id, 
+                                 caption=f"📢 Рассылка от администратора:\n\n{message.caption}" if message.caption else "📢 Рассылка от администратора")
+                elif message.content_type == 'video':
+                    bot.send_video(user_id, message.video.file_id,
+                                 caption=f"📢 Рассылка от администратора:\n\n{message.caption}" if message.caption else "📢 Рассылка от администратора")
+                elif message.content_type == 'document':
+                    bot.send_document(user_id, message.document.file_id,
+                                    caption=f"📢 Рассылка от администратора:\n\n{message.caption}" if message.caption else "📢 Рассылка от администратора")
+                elif message.content_type == 'audio':
+                    bot.send_audio(user_id, message.audio.file_id,
+                                 caption=f"📢 Рассылка от администратора:\n\n{message.caption}" if message.caption else "📢 Рассылка от администратора")
+                elif message.content_type == 'voice':
+                    bot.send_voice(user_id, message.voice.file_id,
+                                 caption="📢 Рассылка от администратора")
+                success_count += 1
+            except Exception as e:
+                fail_count += 1
+                logger.error(f"Failed to send broadcast to {user_id}: {e}")
+            
+            # Обновляем прогресс каждые 10 отправок
+            if (success_count + fail_count) % 10 == 0:
+                try:
+                    bot.edit_message_text(
+                        f"📨 Рассылка...\n✅ Успешно: {success_count}\n❌ Ошибок: {fail_count}",
+                        chat_id=admin_id,
+                        message_id=progress_msg.message_id
+                    )
+                except:
+                    pass
+        
+        # Завершаем рассылку
+        user_broadcast_mode.pop(admin_id, None)
+        bot.edit_message_text(
+            f"✅ Рассылка завершена!\n\n📊 Результаты:\n✅ Успешно: {success_count}\n❌ Ошибок: {fail_count}",
+            chat_id=admin_id,
+            message_id=progress_msg.message_id,
+            reply_markup=get_main_admin_keyboard()
+        )
+        log_admin_action(message.from_user, f"сделал рассылку: успешно {success_count}, ошибок {fail_count}")
+        
+    except Exception as e:
+        logger.error(f"Error in broadcast handler: {e}")
+        try:
+            bot.send_message(admin_id, "❌ Ошибка при рассылке", reply_markup=get_main_admin_keyboard())
+        except:
+            pass
+
+# Обработчик для сообщений пользователей в режиме поддержки
+@bot.message_handler(func=lambda message: message.from_user.id in user_support_mode and not message.text.startswith('/'))
+def handle_support_message(message):
     try:
         user_id = message.from_user.id
-        if user_id in user_reply_mode or user_id in user_bet_mode or user_id in user_custom_bet_mode or user_id in user_blackjack_games:
+        if user_id not in user_support_mode:
             return
-        ban_info = is_banned(user_id)
-        if ban_info:
-            bot.send_message(user_id, "🚫 Вы забанены и не можете отправлять сообщения")
-            return
-        cooldown = check_cooldown(user_id)
-        if cooldown > 0:
-            bot.send_message(user_id, f"⏳ Подождите {int(cooldown)} секунд перед отправкой следующего сообщения")
-            return
-        register_user(user_id,
-                     message.from_user.username,
-                     message.from_user.first_name,
-                     message.from_user.last_name)
+            
+        # Удаляем сообщение пользователя
+        try:
+            bot.delete_message(user_id, message.message_id)
+        except:
+            pass
+            
+        # Пересылаем сообщение админам
         admins = get_all_admins()
         user_info = f"@{message.from_user.username}" if message.from_user.username else message.from_user.first_name
+        
         for admin in admins:
             try:
                 admin_id = admin[0]
                 markup = InlineKeyboardMarkup()
                 markup.add(InlineKeyboardButton("📨 Ответить", callback_data=f"reply_{user_id}"))
+                
                 if message.content_type == 'text':
                     bot.send_message(admin_id, 
-                                   f"📩 Сообщение от {user_info} (ID: {user_id}):\n\n{message.text}",
+                                   f"💬 Сообщение в поддержку от {user_info} (ID: {user_id}):\n\n{message.text}",
                                    reply_markup=markup)
                 else:
-                    caption = f"📩 Сообщение от {user_info} (ID: {user_id})"
+                    caption = f"💬 Сообщение в поддержку от {user_info} (ID: {user_id})"
                     if message.caption:
                         caption += f"\n\n{message.caption}"
+                    
                     if message.content_type == 'photo':
                         bot.send_photo(admin_id, message.photo[-1].file_id, caption=caption, reply_markup=markup)
                     elif message.content_type == 'video':
@@ -1647,11 +1752,14 @@ def forward_to_admins(message):
                     elif message.content_type == 'voice':
                         bot.send_voice(admin_id, message.voice.file_id, caption=caption, reply_markup=markup)
             except Exception as e:
-                logger.error(f"Failed to forward message to admin {admin[0]}: {e}")
-        bot.send_message(user_id, "✅ Ваше сообщение отправлено!")
-        log_user_action(message.from_user, "отправил сообщение")
+                logger.error(f"Failed to forward support message to admin {admin[0]}: {e}")
+        
+        # Подтверждаем отправку пользователю
+        bot.send_message(user_id, "✅ Ваше сообщение отправлено в поддержку! Ожидайте ответа.")
+        log_user_action(message.from_user, "отправил сообщение в поддержку")
+        
     except Exception as e:
-        logger.error(f"Error in message forwarding: {e}")
+        logger.error(f"Error in support message handler: {e}")
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith('reply_'))
 def handle_reply_callback(call):
@@ -1660,15 +1768,21 @@ def handle_reply_callback(call):
         if not is_admin(admin_id):
             bot.answer_callback_query(call.id, "❌ Нет прав")
             return
+            
         target_id = int(call.data.split('_')[1])
         user_reply_mode[admin_id] = target_id
+        
+        # Получаем информацию о пользователе
+        user_info = format_target_info(target_id)
+        
         bot.answer_callback_query(call.id, "💬 Режим ответа включен")
         bot.send_message(
             admin_id,
-            f"💬 Режим ответа включен для пользователя {target_id}\n"
-            f"Отправьте сообщение, которое будет переслано пользователю.\n"
-            f"Для выхода из режима используйте /stop"
+            f"💬 Режим ответа включен для пользователя {user_info}\n"
+            f"Отправьте сообщение (текст, фото, видео, голосовое и т.д.), которое будет переслано пользователю.\n\n"
+            f"Для выхода из режима используйте /stop или нажмите 'Назад' в админ-панели"
         )
+        log_admin_action(call.from_user, f"включил режим ответа для {user_info}")
     except Exception as e:
         logger.error(f"Error in reply callback: {e}")
 
@@ -1677,28 +1791,44 @@ def handle_reply_message(message):
     try:
         admin_id = message.from_user.id
         target_id = user_reply_mode[admin_id]
+        
+        # Удаляем сообщение админа
+        try:
+            bot.delete_message(admin_id, message.message_id)
+        except:
+            pass
+            
         try:
             if message.content_type == 'text':
                 bot.send_message(target_id, f"📨 Ответ от администратора:\n\n{message.text}")
-                bot.send_message(admin_id, f"✅ Ответ отправлен пользователю {target_id}")
-                log_admin_action(message.from_user, f"ответил {target_id} - {message.text}")
+                bot.send_message(admin_id, f"✅ Ответ отправлен пользователю {format_target_info(target_id)}")
+                log_admin_action(message.from_user, f"отправил ответ {target_id}", additional_info=f"текст: {message.text}")
             else:
                 caption = "📨 Ответ от администратора"
                 if message.caption:
                     caption += f"\n\n{message.caption}"
+                    
                 if message.content_type == 'photo':
                     bot.send_photo(target_id, message.photo[-1].file_id, caption=caption)
+                    media_type = "фото"
                 elif message.content_type == 'video':
                     bot.send_video(target_id, message.video.file_id, caption=caption)
+                    media_type = "видео"
                 elif message.content_type == 'document':
                     bot.send_document(target_id, message.document.file_id, caption=caption)
+                    media_type = "документ"
                 elif message.content_type == 'audio':
                     bot.send_audio(target_id, message.audio.file_id, caption=caption)
+                    media_type = "аудио"
                 elif message.content_type == 'voice':
                     bot.send_voice(target_id, message.voice.file_id, caption=caption)
-                bot.send_message(admin_id, f"✅ Медиа-ответ отправлен пользователю {target_id}")
-                media_type = message.content_type
-                log_admin_action(message.from_user, f"ответил {target_id} - [{media_type}] {caption}")
+                    media_type = "голосовое сообщение"
+                else:
+                    media_type = "медиа"
+                    
+                bot.send_message(admin_id, f"✅ {media_type.capitalize()}-ответ отправлен пользователю {format_target_info(target_id)}")
+                log_admin_action(message.from_user, f"отправил ответ {target_id}", additional_info=f"[{media_type}] {caption}")
+                
         except Exception as e:
             bot.send_message(admin_id, f"❌ Не удалось отправить сообщение пользователю {target_id}")
             logger.error(f"Failed to send reply to {target_id}: {e}")
@@ -1709,11 +1839,25 @@ def handle_reply_message(message):
 def stop_reply_mode(message):
     try:
         user_id = message.from_user.id
+        
+        # Удаляем команду
+        try:
+            bot.delete_message(user_id, message.message_id)
+        except:
+            pass
+            
         if user_id in user_reply_mode:
             target_id = user_reply_mode.pop(user_id)
-            bot.send_message(user_id, f"✅ Режим ответа отключен для пользователя {target_id}")
+            bot.send_message(user_id, f"✅ Режим ответа отключен для пользователя {format_target_info(target_id)}")
+            log_admin_action(message.from_user, f"выключил режим ответа для {format_target_info(target_id)}")
+        elif user_id in user_broadcast_mode:
+            user_broadcast_mode.pop(user_id)
+            bot.send_message(user_id, "✅ Режим рассылки отключен")
+        elif user_id in user_support_mode:
+            user_support_mode.pop(user_id)
+            bot.send_message(user_id, "✅ Режим поддержки отключен")
         else:
-            bot.send_message(user_id, "❌ Режим ответа не активен")
+            bot.send_message(user_id, "❌ Ни один режим не активен")
     except Exception as e:
         logger.error(f"Error in /stop: {e}")
 
@@ -1724,6 +1868,13 @@ def ban_command(message):
         if not is_admin(user_id):
             bot.send_message(user_id, "❌ У вас нет прав для этой команды")
             return
+            
+        # Удаляем команду админа
+        try:
+            bot.delete_message(user_id, message.message_id)
+        except:
+            pass
+            
         args = message.text.split()[1:]
         if len(args) < 1:
             bot.send_message(user_id, "❌ Использование: /ban [id] [время_в_секундах] [причина]")
@@ -1746,9 +1897,9 @@ def ban_command(message):
         if ban_user(target_id, ban_type, duration, reason, user_id):
             if duration:
                 time_str = format_time_left(duration)
-                bot.send_message(user_id, f"✅ Пользователь {target_id} забанен на {time_str}\nПричина: {reason}")
+                bot.send_message(user_id, f"✅ Пользователь {format_target_info(target_id)} забанен на {time_str}\nПричина: {reason}")
             else:
-                bot.send_message(user_id, f"✅ Пользователь {target_id} забанен навсегда\nПричина: {reason}")
+                bot.send_message(user_id, f"✅ Пользователь {format_target_info(target_id)} забанен навсегда\nПричина: {reason}")
             try:
                 if duration:
                     bot.send_message(target_id, f"🚫 Вы забанены на {time_str}\nПричина: {reason}")
@@ -1756,7 +1907,7 @@ def ban_command(message):
                     bot.send_message(target_id, f"🚫 Вы забанены навсегда\nПричина: {reason}")
             except:
                 pass
-            log_admin_action(message.from_user, f"забанил пользователя {target_id}", f"время: {duration} сек, причина: {reason}")
+            log_admin_action(message.from_user, f"забанил {format_target_info(target_id)}", additional_info=f"время: {duration} сек, причина: {reason}")
         else:
             bot.send_message(user_id, "❌ Ошибка при бане пользователя")
     except Exception as e:
@@ -1769,18 +1920,25 @@ def razban_command(message):
         if not is_admin(user_id):
             bot.send_message(user_id, "❌ У вас нет прав для этой команды")
             return
+            
+        # Удаляем команду админа
+        try:
+            bot.delete_message(user_id, message.message_id)
+        except:
+            pass
+            
         args = message.text.split()[1:]
         if len(args) < 1:
             bot.send_message(user_id, "❌ Использование: /razban [id]")
             return
         target_id = int(args[0])
         if unban_user(target_id):
-            bot.send_message(user_id, f"✅ Пользователь {target_id} разбанен")
+            bot.send_message(user_id, f"✅ Пользователь {format_target_info(target_id)} разбанен")
             try:
                 bot.send_message(target_id, "✅ Вы были разбанены")
             except:
                 pass
-            log_admin_action(message.from_user, f"разбанил пользователя {target_id}")
+            log_admin_action(message.from_user, f"разбанил {format_target_info(target_id)}")
         else:
             bot.send_message(user_id, "❌ Ошибка при разбане пользователя")
     except Exception as e:
@@ -1793,6 +1951,13 @@ def add_promo_command(message):
         if not is_admin(user_id):
             bot.send_message(user_id, "❌ У вас нет прав для этой команды")
             return
+            
+        # Удаляем команду админа
+        try:
+            bot.delete_message(user_id, message.message_id)
+        except:
+            pass
+            
         args = message.text.split()[1:]
         if len(args) < 2:
             bot.send_message(user_id, "❌ Использование: /add_promo [код] [сумма]")
@@ -1821,6 +1986,13 @@ def admin_logs_command(message):
         if not is_admin(user_id):
             bot.send_message(user_id, "❌ У вас нет прав для этой команды")
             return
+            
+        # Удаляем команду админа
+        try:
+            bot.delete_message(user_id, message.message_id)
+        except:
+            pass
+            
         args = message.text.split()[1:]
         days = 7
         if args:
@@ -1857,6 +2029,13 @@ def use_promo(message):
         if ban_info:
             bot.send_message(user_id, "🚫 Вы забанены и не можете использовать эту команду")
             return
+            
+        # Удаляем команду пользователя
+        try:
+            bot.delete_message(user_id, message.message_id)
+        except:
+            pass
+            
         args = message.text.split()
         if len(args) < 2:
             bot.send_message(user_id, "❌ Использование: /promo [код]")
@@ -1879,6 +2058,13 @@ def request_promo(message):
         if ban_info:
             bot.send_message(user_id, "🚫 Вы забанены и не можете использовать эту команду")
             return
+            
+        # Удаляем команду пользователя
+        try:
+            bot.delete_message(user_id, message.message_id)
+        except:
+            pass
+            
         admins = get_all_admins()
         user_info = f"@{message.from_user.username}" if message.from_user.username else message.from_user.first_name
         for admin in admins:
@@ -1900,6 +2086,13 @@ def request_unban(message):
         if not ban_info:
             bot.send_message(user_id, "✅ Вы не забанены")
             return
+            
+        # Удаляем команду пользователя
+        try:
+            bot.delete_message(user_id, message.message_id)
+        except:
+            pass
+            
         if ban_info['type'] != 'permanent':
             time_left = format_time_left(ban_info['time_left'])
             bot.send_message(user_id, f"⏳ Вы временно забанены. До разбана осталось: {time_left}")
@@ -1934,6 +2127,13 @@ def check_balance(message):
         if ban_info:
             bot.send_message(user_id, "🚫 Вы забанены и не можете использовать эту команду")
             return
+            
+        # Удаляем команду пользователя
+        try:
+            bot.delete_message(user_id, message.message_id)
+        except:
+            pass
+            
         balance = get_user_balance(user_id)
         bot.send_message(user_id, f"💰 Ваш текущий баланс: {balance} монет")
         log_user_action(message.from_user, "check_balance")
@@ -1948,6 +2148,13 @@ def show_top(message):
         if ban_info:
             bot.send_message(user_id, "🚫 Вы забанены и не можете использовать эту команду")
             return
+            
+        # Удаляем команду пользователя
+        try:
+            bot.delete_message(user_id, message.message_id)
+        except:
+            pass
+            
         top_users = get_top_users(10)
         if not top_users:
             bot.send_message(user_id, "📊 Пока нет данных о пользователях")
@@ -1963,19 +2170,92 @@ def show_top(message):
     except Exception as e:
         logger.error(f"Error in /top: {e}")
 
+# Обработчик для пользовательских ставок
+@bot.message_handler(func=lambda message: message.from_user.id in user_custom_bet_mode and not message.text.startswith('/'))
+def handle_custom_bet(message):
+    try:
+        user_id = message.from_user.id
+        if user_id not in user_custom_bet_mode:
+            return
+            
+        # Удаляем сообщение пользователя
+        try:
+            bot.delete_message(user_id, message.message_id)
+        except:
+            pass
+            
+        try:
+            bet_amount = int(message.text)
+            balance = get_user_balance(user_id)
+            
+            if bet_amount < 100:
+                bot.send_message(user_id, "❌ Минимальная ставка: 100 монет")
+                return
+            if bet_amount > balance:
+                bot.send_message(user_id, "❌ Недостаточно средств")
+                return
+                
+            user_custom_bet_mode.pop(user_id, None)
+            
+            # Запускаем игру с кастомной ставкой
+            final_result = spin_slots_animation(bot, user_id, message.message_id, bet_amount, user_id)
+            all_lines = check_all_lines(final_result)
+            total_win, winning_lines = calculate_win(all_lines, bet_amount)
+            
+            if total_win > 0:
+                new_balance = balance - bet_amount + total_win
+                update_user_balance(user_id, new_balance)
+                result_text = f"🎉 ВЫИГРЫШ\n\n💵 Ставка: {bet_amount}\n💰 Выигрыш: {total_win}\n💎 Баланс: {new_balance}\n\n"
+                if winning_lines:
+                    result_text += "🏆 Линии:\n" + "\n".join(winning_lines[:3])
+            else:
+                new_balance = balance - bet_amount
+                update_user_balance(user_id, new_balance)
+                result_text = f"😞 ПРОИГРЫШ\n\n💵 Ставка: {bet_amount}\n💎 Баланс: {new_balance}"
+                
+            keyboard = InlineKeyboardMarkup()
+            keyboard.add(
+                InlineKeyboardButton("🔄 Сыграть еще", callback_data="game_slots"),
+                InlineKeyboardButton("🔙 Назад", callback_data="user_back_main")
+            )
+            bot.send_message(user_id, result_text, reply_markup=keyboard)
+            log_user_action(message.from_user, f"сыграл в слоты: ставка {bet_amount}, выигрыш {total_win}")
+            
+        except ValueError:
+            bot.send_message(user_id, "❌ Введите корректное число")
+            
+    except Exception as e:
+        logger.error(f"Error in custom bet handler: {e}")
+
 @bot.message_handler(func=lambda message: True)
 def handle_unknown_commands(message):
     try:
         user_id = message.from_user.id
-        if user_id in user_reply_mode or user_id in user_bet_mode or user_id in user_custom_bet_mode or user_id in user_blackjack_games:
+        
+        # Проверяем, не находится ли пользователь в каком-либо режиме
+        if (user_id in user_reply_mode or user_id in user_broadcast_mode or 
+            user_id in user_support_mode or user_id in user_custom_bet_mode or 
+            user_id in user_blackjack_games):
             return
+            
+        # Удаляем сообщение если это не команда
         if message.text and message.text.startswith('/'):
             bot.send_message(user_id, 
                            "❌ Неизвестная команда\n"
                            "Используйте /help для просмотра доступных команд")
             log_user_action(message.from_user, f"ввел неизвестную команду: {message.text}")
+        else:
+            # Удаляем обычное сообщение пользователя
+            try:
+                bot.delete_message(user_id, message.message_id)
+            except:
+                pass
+                
     except Exception as e:
         logger.error(f"Error in unknown command handler: {e}")
+
+# Глобальная переменная для игр
+user_blackjack_games = {}
 
 if os.environ.get('RENDER'):
     @app.route('/webhook', methods=['POST'])
