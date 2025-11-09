@@ -179,6 +179,16 @@ def get_admin_logs(days=30):
         logger.exception("Failed to read admin logs: %s", e)
         return []
 
+def delete_message_with_delay(chat_id, message_id, delay=5):
+    """Удаляет сообщение через указанное время"""
+    def delete():
+        time.sleep(delay)
+        try:
+            bot.delete_message(chat_id, message_id)
+        except:
+            pass
+    Thread(target=delete, daemon=True).start()
+
 def get_main_user_keyboard():
     keyboard = InlineKeyboardMarkup(row_width=2)
     keyboard.add(
@@ -301,8 +311,8 @@ def init_db():
                     first_name TEXT, 
                     last_name TEXT, 
                     date_added TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    referrer_id BIGINT,  -- ДОБАВЛЕНО
-                    referral_count INTEGER DEFAULT 0  -- ДОБАВЛЕНО
+                    referrer_id BIGINT,
+                    referral_count INTEGER DEFAULT 0
                 )
             ''')
             
@@ -327,7 +337,6 @@ def init_db():
                 )
             ''')
             
-            # ОСТАЛЬНЫЕ ТАБЛИЦЫ...
             c.execute('''
                 CREATE TABLE IF NOT EXISTS bans (
                     user_id BIGINT PRIMARY KEY, 
@@ -375,7 +384,7 @@ def init_db():
         safe_db_execute(_init)
     except Exception as e:
         logger.exception(f"Failed to initialize DB: {e}")
-        
+
 def register_user(user_id, username, first_name, last_name, referrer_id=None):
     def _register():
         conn = get_db_connection()
@@ -922,7 +931,7 @@ def send_welcome(message):
             pass
         
         # ОТПРАВЛЯЕМ НОВОЕ ПРИВЕТСТВЕННОЕ СООБЩЕНИЕ
-        bot.send_message(
+        sent_msg = bot.send_message(
             user_id, 
             welcome_text,
             parse_mode='Markdown',
@@ -1572,12 +1581,21 @@ def handle_admin_reply_mode(message):
         try:
             target_id = int(target_id)
             user_reply_mode[admin_id] = target_id
+            
+            # Удаляем сообщение с ID
+            try:
+                bot.delete_message(admin_id, message.message_id)
+            except:
+                pass
+                
             bot.send_message(
                 admin_id,
                 f"💬 Режим ответа для пользователя {target_id}\n\nОтправьте сообщение (текст, фото, видео и т.д.):\n\n/stop - выйти из режима"
             )
         except:
-            bot.send_message(admin_id, "❌ Неверный ID пользователя")
+            msg = bot.send_message(admin_id, "❌ Неверный ID пользователя")
+            delete_message_with_delay(admin_id, msg.message_id, 3)
+            delete_message_with_delay(admin_id, message.message_id, 3)
             
     except Exception as e:
         logger.error(f"Error in admin reply mode: {e}")
@@ -1599,22 +1617,17 @@ def handle_broadcast_message(message):
             try:
                 user_id = user[0]
                 if message.content_type == 'text':
-                    bot.send_message(user_id, f"📢 Рассылка от администратора:\n\n{message.text}")
+                    bot.send_message(user_id, message.text)  # БЕЗ "Рассылка от администратора"
                 elif message.content_type == 'photo':
-                    bot.send_photo(user_id, message.photo[-1].file_id, 
-                                 caption=f"📢 Рассылка от администратора:\n\n{message.caption}" if message.caption else "📢 Рассылка от администратора")
+                    bot.send_photo(user_id, message.photo[-1].file_id, caption=message.caption)
                 elif message.content_type == 'video':
-                    bot.send_video(user_id, message.video.file_id,
-                                 caption=f"📢 Рассылка от администратора:\n\n{message.caption}" if message.caption else "📢 Рассылка от администратора")
+                    bot.send_video(user_id, message.video.file_id, caption=message.caption)
                 elif message.content_type == 'document':
-                    bot.send_document(user_id, message.document.file_id,
-                                    caption=f"📢 Рассылка от администратора:\n\n{message.caption}" if message.caption else "📢 Рассылка от администратора")
+                    bot.send_document(user_id, message.document.file_id, caption=message.caption)
                 elif message.content_type == 'audio':
-                    bot.send_audio(user_id, message.audio.file_id,
-                                 caption=f"📢 Рассылка от администратора:\n\n{message.caption}" if message.caption else "📢 Рассылка от администратора")
+                    bot.send_audio(user_id, message.audio.file_id, caption=message.caption)
                 elif message.content_type == 'voice':
-                    bot.send_voice(user_id, message.voice.file_id,
-                                 caption="📢 Рассылка от администратора")
+                    bot.send_voice(user_id, message.voice.file_id)
                 success_count += 1
             except Exception as e:
                 fail_count += 1
@@ -1630,12 +1643,24 @@ def handle_broadcast_message(message):
                     pass
         
         user_broadcast_mode.pop(admin_id, None)
-        bot.edit_message_text(
+        
+        # Удаляем прогресс и исходное сообщение
+        try:
+            bot.delete_message(admin_id, progress_msg.message_id)
+        except:
+            pass
+        try:
+            bot.delete_message(admin_id, message.message_id)
+        except:
+            pass
+            
+        result_msg = bot.send_message(
+            admin_id,
             f"✅ Рассылка завершена!\n\n📊 Результаты:\n✅ Успешно: {success_count}\n❌ Ошибок: {fail_count}",
-            chat_id=admin_id,
-            message_id=progress_msg.message_id,
             reply_markup=get_main_admin_keyboard()
         )
+        delete_message_with_delay(admin_id, result_msg.message_id, 5)
+        
         log_admin_action(message.from_user, f"сделал рассылку: успешно {success_count}, ошибок {fail_count}")
         
     except Exception as e:
@@ -1651,6 +1676,12 @@ def handle_support_message(message):
         admins = get_all_admins()
         user_info = f"@{message.from_user.username}" if message.from_user.username else message.from_user.first_name
         
+        # Удаляем сообщение пользователя
+        try:
+            bot.delete_message(user_id, message.message_id)
+        except:
+            pass
+            
         for admin in admins:
             try:
                 admin_id = admin[0]
@@ -1679,7 +1710,9 @@ def handle_support_message(message):
             except Exception as e:
                 logger.error(f"Failed to forward to admin {admin[0]}: {e}")
         
-        bot.send_message(user_id, "✅ Ваше сообщение отправлено в поддержку! Ожидайте ответа.")
+        confirm_msg = bot.send_message(user_id, "✅ Ваше сообщение отправлено в поддержку! Ожидайте ответа.")
+        delete_message_with_delay(user_id, confirm_msg.message_id, 5)
+        
         log_user_action(message.from_user, "отправил сообщение в поддержку")
         
     except Exception as e:
@@ -1697,6 +1730,13 @@ def handle_reply_callback(call):
         user_reply_mode[admin_id] = target_id
         
         bot.answer_callback_query(call.id, "💬 Режим ответа включен")
+        
+        # Удаляем старое сообщение с кнопкой
+        try:
+            bot.delete_message(admin_id, call.message.message_id)
+        except:
+            pass
+            
         bot.send_message(
             admin_id,
             f"💬 Режим ответа для пользователя {target_id}\n\nОтправьте сообщение (текст, фото, видео и т.д.):\n\n/stop - выйти из режима"
@@ -1712,39 +1752,44 @@ def handle_admin_reply(message):
         admin_id = message.from_user.id
         target_id = user_reply_mode[admin_id]
         
+        # Удаляем сообщение админа
+        try:
+            bot.delete_message(admin_id, message.message_id)
+        except:
+            pass
+            
         try:
             if message.content_type == 'text':
-                bot.send_message(target_id, f"📨 Ответ от администратора:\n\n{message.text}")
-                bot.send_message(admin_id, f"✅ Ответ отправлен пользователю {target_id}")
+                bot.send_message(target_id, message.text)  # БЕЗ "Ответ от администратора"
+                confirm_msg = bot.send_message(admin_id, f"✅ Ответ отправлен пользователю {target_id}")
+                delete_message_with_delay(admin_id, confirm_msg.message_id, 3)
                 log_admin_action(message.from_user, f"ответил {target_id}", additional_info=f"текст: {message.text}")
             else:
-                caption = "📨 Ответ от администратора"
-                if message.caption:
-                    caption += f"\n\n{message.caption}"
-                    
                 if message.content_type == 'photo':
-                    bot.send_photo(target_id, message.photo[-1].file_id, caption=caption)
+                    bot.send_photo(target_id, message.photo[-1].file_id, caption=message.caption)
                     media_type = "фото"
                 elif message.content_type == 'video':
-                    bot.send_video(target_id, message.video.file_id, caption=caption)
+                    bot.send_video(target_id, message.video.file_id, caption=message.caption)
                     media_type = "видео"
                 elif message.content_type == 'document':
-                    bot.send_document(target_id, message.document.file_id, caption=caption)
+                    bot.send_document(target_id, message.document.file_id, caption=message.caption)
                     media_type = "документ"
                 elif message.content_type == 'audio':
-                    bot.send_audio(target_id, message.audio.file_id, caption=caption)
+                    bot.send_audio(target_id, message.audio.file_id, caption=message.caption)
                     media_type = "аудио"
                 elif message.content_type == 'voice':
-                    bot.send_voice(target_id, message.voice.file_id, caption=caption)
+                    bot.send_voice(target_id, message.voice.file_id)
                     media_type = "голосовое сообщение"
                 else:
                     media_type = "медиа"
                     
-                bot.send_message(admin_id, f"✅ {media_type.capitalize()}-ответ отправлен пользователю {target_id}")
+                confirm_msg = bot.send_message(admin_id, f"✅ {media_type.capitalize()}-ответ отправлен пользователю {target_id}")
+                delete_message_with_delay(admin_id, confirm_msg.message_id, 3)
                 log_admin_action(message.from_user, f"ответил {target_id}", additional_info=f"[{media_type}]")
                 
         except Exception as e:
-            bot.send_message(admin_id, f"❌ Не удалось отправить сообщение пользователю {target_id}")
+            error_msg = bot.send_message(admin_id, f"❌ Не удалось отправить сообщение пользователю {target_id}")
+            delete_message_with_delay(admin_id, error_msg.message_id, 5)
             logger.error(f"Failed to send reply to {target_id}: {e}")
     except Exception as e:
         logger.error(f"Error in reply handler: {e}")
@@ -1784,9 +1829,13 @@ def ban_command(message):
         if ban_user(target_id, ban_type, duration, reason, user_id):
             if duration:
                 time_str = format_time_left(duration)
-                bot.send_message(user_id, f"✅ Пользователь {target_id} забанен на {time_str}\nПричина: {reason}")
+                result_msg = bot.send_message(user_id, f"✅ Пользователь {target_id} забанен на {time_str}\nПричина: {reason}")
             else:
-                bot.send_message(user_id, f"✅ Пользователь {target_id} забанен навсегда\nПричина: {reason}")
+                result_msg = bot.send_message(user_id, f"✅ Пользователь {target_id} забанен навсегда\nПричина: {reason}")
+            
+            delete_message_with_delay(user_id, result_msg.message_id, 5)
+            delete_message_with_delay(user_id, message.message_id, 5)
+            
             try:
                 if duration:
                     bot.send_message(target_id, f"🚫 Вы забанены на {time_str}\nПричина: {reason}")
@@ -1796,7 +1845,9 @@ def ban_command(message):
                 pass
             log_admin_action(message.from_user, f"забанил {target_id}", additional_info=f"время: {duration} сек, причина: {reason}")
         else:
-            bot.send_message(user_id, "❌ Ошибка при бане пользователя")
+            error_msg = bot.send_message(user_id, "❌ Ошибка при бане пользователя")
+            delete_message_with_delay(user_id, error_msg.message_id, 5)
+            delete_message_with_delay(user_id, message.message_id, 5)
     except Exception as e:
         logger.error(f"Error in /ban: {e}")
 
@@ -1815,14 +1866,19 @@ def razban_command(message):
             
         target_id = int(args[0])
         if unban_user(target_id):
-            bot.send_message(user_id, f"✅ Пользователь {target_id} разбанен")
+            result_msg = bot.send_message(user_id, f"✅ Пользователь {target_id} разбанен")
+            delete_message_with_delay(user_id, result_msg.message_id, 5)
+            delete_message_with_delay(user_id, message.message_id, 5)
+            
             try:
                 bot.send_message(target_id, "✅ Вы были разбанены")
             except:
                 pass
             log_admin_action(message.from_user, f"разбанил {target_id}")
         else:
-            bot.send_message(user_id, "❌ Ошибка при разбане пользователя")
+            error_msg = bot.send_message(user_id, "❌ Ошибка при разбане пользователя")
+            delete_message_with_delay(user_id, error_msg.message_id, 5)
+            delete_message_with_delay(user_id, message.message_id, 5)
     except Exception as e:
         logger.error(f"Error in /razban: {e}")
 
@@ -1851,10 +1907,14 @@ def add_promo_command(message):
             return
             
         if add_promocode(promocode, value):
-            bot.send_message(user_id, f"✅ Промокод {promocode} на {value} монет создан!")
+            result_msg = bot.send_message(user_id, f"✅ Промокод {promocode} на {value} монет создан!")
+            delete_message_with_delay(user_id, result_msg.message_id, 5)
+            delete_message_with_delay(user_id, message.message_id, 5)
             log_admin_action(message.from_user, f"создал промокод {promocode} на {value} монет")
         else:
-            bot.send_message(user_id, "❌ Ошибка при создании промокода")
+            error_msg = bot.send_message(user_id, "❌ Ошибка при создании промокода")
+            delete_message_with_delay(user_id, error_msg.message_id, 5)
+            delete_message_with_delay(user_id, message.message_id, 5)
     except Exception as e:
         logger.error(f"Error in /add_promo: {e}")
 
@@ -1932,12 +1992,18 @@ def add_admin_command(message):
             new_admin_id = int(args[0])
             # Здесь нужно получить информацию о пользователе, но для простоты используем заглушки
             if add_admin(new_admin_id, "unknown", "User"):
-                bot.send_message(user_id, f"✅ Пользователь {new_admin_id} добавлен в админы")
+                result_msg = bot.send_message(user_id, f"✅ Пользователь {new_admin_id} добавлен в админы")
+                delete_message_with_delay(user_id, result_msg.message_id, 5)
+                delete_message_with_delay(user_id, message.message_id, 5)
                 log_admin_action(message.from_user, f"добавил админа {new_admin_id}")
             else:
-                bot.send_message(user_id, "❌ Ошибка при добавлении админа")
+                error_msg = bot.send_message(user_id, "❌ Ошибка при добавлении админа")
+                delete_message_with_delay(user_id, error_msg.message_id, 5)
+                delete_message_with_delay(user_id, message.message_id, 5)
         except ValueError:
-            bot.send_message(user_id, "❌ ID должен быть числом")
+            error_msg = bot.send_message(user_id, "❌ ID должен быть числом")
+            delete_message_with_delay(user_id, error_msg.message_id, 5)
+            delete_message_with_delay(user_id, message.message_id, 5)
     except Exception as e:
         logger.error(f"Error in /add_admin: {e}")
 
@@ -1957,12 +2023,18 @@ def remove_admin_command(message):
         try:
             admin_id = int(args[0])
             if remove_admin(admin_id):
-                bot.send_message(user_id, f"✅ Админ {admin_id} удален")
+                result_msg = bot.send_message(user_id, f"✅ Админ {admin_id} удален")
+                delete_message_with_delay(user_id, result_msg.message_id, 5)
+                delete_message_with_delay(user_id, message.message_id, 5)
                 log_admin_action(message.from_user, f"удалил админа {admin_id}")
             else:
-                bot.send_message(user_id, "❌ Ошибка при удалении админа")
+                error_msg = bot.send_message(user_id, "❌ Ошибка при удалении админа")
+                delete_message_with_delay(user_id, error_msg.message_id, 5)
+                delete_message_with_delay(user_id, message.message_id, 5)
         except ValueError:
-            bot.send_message(user_id, "❌ ID должен быть числом")
+            error_msg = bot.send_message(user_id, "❌ ID должен быть числом")
+            delete_message_with_delay(user_id, error_msg.message_id, 5)
+            delete_message_with_delay(user_id, message.message_id, 5)
     except Exception as e:
         logger.error(f"Error in /remove_admin: {e}")
 
@@ -1975,10 +2047,14 @@ def clear_db_command(message):
             return
             
         if clear_all_databases():
-            bot.send_message(user_id, "✅ Все базы данных очищены!")
+            result_msg = bot.send_message(user_id, "✅ Все базы данных очищены!")
+            delete_message_with_delay(user_id, result_msg.message_id, 5)
+            delete_message_with_delay(user_id, message.message_id, 5)
             log_admin_action(message.from_user, "очистил все базы данных")
         else:
-            bot.send_message(user_id, "❌ Ошибка при очистке БД")
+            error_msg = bot.send_message(user_id, "❌ Ошибка при очистке БД")
+            delete_message_with_delay(user_id, error_msg.message_id, 5)
+            delete_message_with_delay(user_id, message.message_id, 5)
     except Exception as e:
         logger.error(f"Error in /clear_db: {e}")
 
@@ -1991,7 +2067,9 @@ def broadcast_command(message):
             return
             
         user_broadcast_mode[user_id] = True
-        bot.send_message(user_id, "📢 Режим рассылки\n\nВведите сообщение для рассылки:")
+        msg = bot.send_message(user_id, "📢 Режим рассылки\n\nВведите сообщение для рассылки:")
+        delete_message_with_delay(user_id, msg.message_id, 10)
+        delete_message_with_delay(user_id, message.message_id, 5)
     except Exception as e:
         logger.error(f"Error in /broadcast: {e}")
 
@@ -2011,9 +2089,13 @@ def reply_command(message):
         try:
             target_id = int(args[0])
             user_reply_mode[user_id] = target_id
-            bot.send_message(user_id, f"💬 Режим ответа для пользователя {target_id}\n\nОтправьте сообщение:")
+            msg = bot.send_message(user_id, f"💬 Режим ответа для пользователя {target_id}\n\nОтправьте сообщение:")
+            delete_message_with_delay(user_id, msg.message_id, 10)
+            delete_message_with_delay(user_id, message.message_id, 5)
         except ValueError:
-            bot.send_message(user_id, "❌ ID должен быть числом")
+            error_msg = bot.send_message(user_id, "❌ ID должен быть числом")
+            delete_message_with_delay(user_id, error_msg.message_id, 5)
+            delete_message_with_delay(user_id, message.message_id, 5)
     except Exception as e:
         logger.error(f"Error in /reply: {e}")
 
@@ -2068,24 +2150,33 @@ def stop_command(message):
         
         if user_id in user_reply_mode:
             target_id = user_reply_mode.pop(user_id)
-            bot.send_message(user_id, f"✅ Режим ответа отключен для пользователя {target_id}")
+            msg = bot.send_message(user_id, f"✅ Режим ответа отключен для пользователя {target_id}")
+            delete_message_with_delay(user_id, msg.message_id, 3)
         elif user_id in user_broadcast_mode:
             user_broadcast_mode.pop(user_id)
-            bot.send_message(user_id, "✅ Режим рассылки отключен")
+            msg = bot.send_message(user_id, "✅ Режим рассылки отключен")
+            delete_message_with_delay(user_id, msg.message_id, 3)
         elif user_id in user_support_mode:
             user_support_mode.pop(user_id)
-            bot.send_message(user_id, "✅ Режим поддержки отключен")
+            msg = bot.send_message(user_id, "✅ Режим поддержки отключен")
+            delete_message_with_delay(user_id, msg.message_id, 3)
         elif user_id in user_find_mode:
             user_find_mode.pop(user_id)
-            bot.send_message(user_id, "✅ Режим поиска отключен")
+            msg = bot.send_message(user_id, "✅ Режим поиска отключен")
+            delete_message_with_delay(user_id, msg.message_id, 3)
         elif user_id in user_add_admin_mode:
             user_add_admin_mode.pop(user_id)
-            bot.send_message(user_id, "✅ Режим добавления админа отключен")
+            msg = bot.send_message(user_id, "✅ Режим добавления админа отключен")
+            delete_message_with_delay(user_id, msg.message_id, 3)
         elif user_id in user_remove_admin_mode:
             user_remove_admin_mode.pop(user_id)
-            bot.send_message(user_id, "✅ Режим удаления админа отключен")
+            msg = bot.send_message(user_id, "✅ Режим удаления админа отключен")
+            delete_message_with_delay(user_id, msg.message_id, 3)
         else:
-            bot.send_message(user_id, "❌ Ни один режим не активен")
+            msg = bot.send_message(user_id, "❌ Ни один режим не активен")
+            delete_message_with_delay(user_id, msg.message_id, 3)
+            
+        delete_message_with_delay(user_id, message.message_id, 3)
     except Exception as e:
         logger.error(f"Error in /stop: {e}")
 
@@ -2107,10 +2198,14 @@ def use_promo(message):
         promocode = args[1]
         value, result_message = use_promocode(promocode, user_id)
         if value is not None:
-            bot.send_message(user_id, result_message)
+            msg = bot.send_message(user_id, result_message)
+            delete_message_with_delay(user_id, msg.message_id, 5)
+            delete_message_with_delay(user_id, message.message_id, 5)
             log_user_action(message.from_user, f"used_promo {promocode}")
         else:
-            bot.send_message(user_id, f"❌ {result_message}")
+            msg = bot.send_message(user_id, f"❌ {result_message}")
+            delete_message_with_delay(user_id, msg.message_id, 5)
+            delete_message_with_delay(user_id, message.message_id, 5)
     except Exception as e:
         logger.error(f"Error in /promo: {e}")
 
@@ -2131,7 +2226,9 @@ def request_promo(message):
                 bot.send_message(admin_id, f"🎫 Пользователь {user_info} (ID: {user_id}) запросил промокод")
             except Exception as e:
                 logger.error(f"Failed to notify admin {admin[0]} about promo request: {e}")
-        bot.send_message(user_id, "✅ Ваш запрос на промокод отправлен администраторам. Ожидайте создания промокода.")
+        msg = bot.send_message(user_id, "✅ Ваш запрос на промокод отправлен администраторам. Ожидайте создания промокода.")
+        delete_message_with_delay(user_id, msg.message_id, 5)
+        delete_message_with_delay(user_id, message.message_id, 5)
         log_user_action(message.from_user, "request_promo")
     except Exception as e:
         logger.error(f"Error in /get_promo: {e}")
@@ -2146,7 +2243,9 @@ def check_balance(message):
             return
             
         balance = get_user_balance(user_id)
-        bot.send_message(user_id, f"💰 Ваш текущий баланс: {balance} монет")
+        msg = bot.send_message(user_id, f"💰 Ваш текущий баланс: {balance} монет")
+        delete_message_with_delay(user_id, msg.message_id, 5)
+        delete_message_with_delay(user_id, message.message_id, 5)
         log_user_action(message.from_user, "check_balance")
     except Exception as e:
         logger.error(f"Error in /balance: {e}")
@@ -2189,10 +2288,14 @@ def handle_custom_bet(message):
             balance = get_user_balance(user_id)
             
             if bet_amount < 100:
-                bot.send_message(user_id, "❌ Минимальная ставка: 100 монет")
+                msg = bot.send_message(user_id, "❌ Минимальная ставка: 100 монет")
+                delete_message_with_delay(user_id, msg.message_id, 3)
+                delete_message_with_delay(user_id, message.message_id, 3)
                 return
             if bet_amount > balance:
-                bot.send_message(user_id, "❌ Недостаточно средств")
+                msg = bot.send_message(user_id, "❌ Недостаточно средств")
+                delete_message_with_delay(user_id, msg.message_id, 3)
+                delete_message_with_delay(user_id, message.message_id, 3)
                 return
                 
             user_custom_bet_mode.pop(user_id, None)
@@ -2222,7 +2325,9 @@ def handle_custom_bet(message):
             log_user_action(message.from_user, f"сыграл в слоты: ставка {bet_amount}, выигрыш {total_win}")
             
         except ValueError:
-            bot.send_message(user_id, "❌ Введите корректное число")
+            msg = bot.send_message(user_id, "❌ Введите корректное число")
+            delete_message_with_delay(user_id, msg.message_id, 3)
+            delete_message_with_delay(user_id, message.message_id, 3)
             
     except Exception as e:
         logger.error(f"Error in custom bet handler: {e}")
@@ -2240,9 +2345,11 @@ def handle_unknown_commands(message):
             return
             
         if message.text and message.text.startswith('/'):
-            bot.send_message(user_id, 
+            msg = bot.send_message(user_id, 
                            "❌ Неизвестная команда\n"
                            "Используйте /help для просмотра доступных команд")
+            delete_message_with_delay(user_id, msg.message_id, 5)
+            delete_message_with_delay(user_id, message.message_id, 5)
             log_user_action(message.from_user, f"ввел неизвестную команду: {message.text}")
                 
     except Exception as e:
@@ -2275,4 +2382,4 @@ else:
             logger.info("🚀 Starting bot in POLLING mode (local development)")
             bot.polling(none_stop=True, timeout=60)
         except Exception as e:
-            logger.exception("Polling error: %s", e)
+            logger.exception("Polling error: %s",e)
