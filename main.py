@@ -292,6 +292,8 @@ def init_db():
         def _init():
             conn = get_db_connection()
             c = conn.cursor()
+            
+            # ОСНОВНЫЕ ТАБЛИЦЫ
             c.execute('''
                 CREATE TABLE IF NOT EXISTS users (
                     user_id BIGINT PRIMARY KEY, 
@@ -299,10 +301,22 @@ def init_db():
                     first_name TEXT, 
                     last_name TEXT, 
                     date_added TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    referrer_id BIGINT,
-                    referral_count INTEGER DEFAULT 0
+                    referrer_id BIGINT,  -- ДОБАВЛЕНО
+                    referral_count INTEGER DEFAULT 0  -- ДОБАВЛЕНО
                 )
             ''')
+            
+            # ДОБАВЛЯЕМ КОЛОНКУ ЕСЛИ ЕЁ НЕТ
+            try:
+                c.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS referrer_id BIGINT")
+            except:
+                pass
+                
+            try:
+                c.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS referral_count INTEGER DEFAULT 0")
+            except:
+                pass
+            
             c.execute('''
                 CREATE TABLE IF NOT EXISTS admins (
                     user_id BIGINT PRIMARY KEY, 
@@ -312,6 +326,8 @@ def init_db():
                     date_added TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             ''')
+            
+            # ОСТАЛЬНЫЕ ТАБЛИЦЫ...
             c.execute('''
                 CREATE TABLE IF NOT EXISTS bans (
                     user_id BIGINT PRIMARY KEY, 
@@ -345,18 +361,21 @@ def init_db():
                     date_added TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             ''')
+            
             c.execute("""
                 INSERT INTO admins (user_id, username, first_name, is_main_admin) 
                 VALUES (%s, %s, %s, %s)
                 ON CONFLICT (user_id) DO NOTHING
             """, (ADMIN_ID, "werb", "werb", True))
+            
             conn.commit()
             conn.close()
             logger.info("Database initialized successfully")
+            
         safe_db_execute(_init)
     except Exception as e:
         logger.exception(f"Failed to initialize DB: {e}")
-
+        
 def register_user(user_id, username, first_name, last_name, referrer_id=None):
     def _register():
         conn = get_db_connection()
