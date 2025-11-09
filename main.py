@@ -218,7 +218,7 @@ def format_admin_logs_for_display(logs, days=30):
     sorted_dates = sorted(grouped_logs.keys(), reverse=True)
     
     for date in sorted_dates:
-        result += f"============={date}=============\n"
+        result += f"════════ {date} ════════\n"
         
         day_logs = grouped_logs[date]
         day_logs.sort(key=lambda x: x[0])
@@ -499,7 +499,7 @@ app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "🤖 Bot is alive and running! TG SEARCH: @KVZDR_BOT"
+    return "🤖 Bot is alive and running! TG: @werb"
 
 @app.route('/health')
 def health():
@@ -585,7 +585,7 @@ def init_db():
                 INSERT INTO admins (user_id, username, first_name, is_main_admin) 
                 VALUES (%s, %s, %s, %s)
                 ON CONFLICT (user_id) DO NOTHING
-            """, (ADMIN_ID, "kvazador", "kvazador", True))
+            """, (ADMIN_ID, "werb", "werb", True))
             
             # Проверяем что админ добавлен
             c.execute("SELECT * FROM admins WHERE user_id = %s", (ADMIN_ID,))
@@ -862,15 +862,14 @@ def is_banned(user_id):
 def format_time_left(seconds):
     """Форматирует оставшееся время в читаемый вид"""
     if seconds < 60:
-        return f"{int(seconds)} секунд"
+        return f"{int(seconds)} сек"
     elif seconds < 3600:
         minutes = int(seconds // 60)
-        secs = int(seconds % 60)
-        return f"{minutes} минут {secs} секунд"
+        return f"{minutes} мин"
     else:
         hours = int(seconds // 3600)
         minutes = int((seconds % 3600) // 60)
-        return f"{hours} часов {minutes} минут"
+        return f"{hours} ч {minutes} мин"
 
 def can_request_unban(user_id):
     """Проверяет, может ли пользователь запросить разбан (прошла ли неделя с последнего запроса)"""
@@ -980,7 +979,7 @@ def use_promocode(promocode, user_id):
         conn.close()
         
         logger.info("User %s used promocode %s, got %s coins, new balance: %s", user_id, promocode, value, new_balance)
-        return value, f"Промокод активирован! Вы получили {value} монет."
+        return value, f"🎉 +{value} монет"
     
     return safe_db_execute(_use)
 
@@ -1039,23 +1038,23 @@ def get_custom_bet_keyboard():
 def get_main_keyboard():
     """Главная клавиатура меню"""
     markup = ReplyKeyboardMarkup(resize_keyboard=True)
-    markup.add(KeyboardButton("🎰 Запустить бурмалду"))
-    markup.add(KeyboardButton("♠️ Играть в Blackjack"))
-    markup.add(KeyboardButton("🎁 Запросить промокод"))
+    markup.add(KeyboardButton("🎰 Слоты"))
+    markup.add(KeyboardButton("♠️ Блекджек"))
+    markup.add(KeyboardButton("🎁 Промокод"))
     return markup
 
 def calculate_win(lines, bet):
     total_win = 0
     winning_lines = []
     
-    # Коэффициенты для разных комбинаций (адекватные)
+    # Коэффициенты для разных комбинаций
     multipliers = {
-        "🍒": {"3": 1.5},   # ×2
-        "🍋": {"3": 2},   # ×3  
-        "🍊": {"3": 3},   # ×4
-        "🍇": {"3": 4},   # ×5
-        "💎": {"3": 6},   # ×8
-        "7️⃣": {"3": 12}  # ×15
+        "🍒": {"3": 1.5},
+        "🍋": {"3": 2},  
+        "🍊": {"3": 3},
+        "🍇": {"3": 4},
+        "💎": {"3": 6},
+        "7️⃣": {"3": 12}
     }
     
     for i, line in enumerate(lines, 1):
@@ -1067,7 +1066,7 @@ def calculate_win(lines, bet):
             if symbol in multipliers:
                 win_amount = bet * multipliers[symbol]["3"]
                 total_win += win_amount
-                winning_lines.append(f"Линия {i}: {symbol*3} x{multipliers[symbol]['3']} = {win_amount}")
+                winning_lines.append(f"Линия {i}: {symbol*3} x{multipliers[symbol]['3']}")
     
     return total_win, winning_lines
 
@@ -1092,7 +1091,7 @@ def check_all_lines(result):
     return lines
 
 def spin_slots_animation(bot, chat_id, bet_amount):
-    """Анимация прокрутки слотов 3x3 с вертикальными линиями"""
+    """Анимация прокрутки слотов"""
     symbols = ["🍒", "🍋", "🍊", "🍇", "💎", "7️⃣"]
     
     # Генерируем финальный результат
@@ -1104,12 +1103,12 @@ def spin_slots_animation(bot, chat_id, bet_amount):
     
     # Начальное сообщение
     empty_grid = "⬜️⬜️⬜️\n⬜️⬜️⬜️\n⬜️⬜️⬜️"
-    msg = bot.send_message(chat_id, f"🎰 НАЧИНАЕМ... 🎰\n{empty_grid}")
+    msg = bot.send_message(chat_id, f"🎰 Запуск...\n{empty_grid}")
     
     time.sleep(0.5)
     
-    # Фаза 1: Быстрая прокрутка всех линий (1.5 секунды)
-    for frame in range(6):
+    # Анимация прокрутки
+    for frame in range(4):
         display = [
             [random.choice(symbols) for _ in range(3)],
             [random.choice(symbols) for _ in range(3)],
@@ -1119,60 +1118,24 @@ def spin_slots_animation(bot, chat_id, bet_amount):
         grid_text = f"{''.join(display[0])}\n{''.join(display[1])}\n{''.join(display[2])}"
         try:
             bot.edit_message_text(
-                f"🎰 КРУТИМ... 🎰\n{grid_text}",
+                f"🎰 Крутим...\n{grid_text}",
                 chat_id=chat_id,
                 message_id=msg.message_id
             )
         except:
             pass
-        time.sleep(0.25)
-    
-    # Фаза 2: Остановка по вертикальным линиям (1.5 секунды)
-    # Останавливаем левую вертикаль
-    for i in range(3):
-        final_result[i][0] = random.choice(symbols)
-    
-    grid_text = f"{''.join(final_result[0])}\n{''.join(final_result[1])}\n{''.join(final_result[2])}"
-    try:
-        bot.edit_message_text(
-            f"🎰 ОСТАНАВЛИВАЕМ... 🎰\n{grid_text}",
-            chat_id=chat_id,
-            message_id=msg.message_id
-        )
-    except:
-        pass
-    time.sleep(0.5)
-    
-    # Останавливаем центральную вертикаль
-    for i in range(3):
-        final_result[i][1] = random.choice(symbols)
-    
-    grid_text = f"{''.join(final_result[0])}\n{''.join(final_result[1])}\n{''.join(final_result[2])}"
-    try:
-        bot.edit_message_text(
-            f"🎰 ОСТАНАВЛИВАЕМ... 🎰\n{grid_text}",
-            chat_id=chat_id,
-            message_id=msg.message_id
-        )
-    except:
-        pass
-    time.sleep(0.5)
-    
-    # Останавливаем правую вертикаль (финальный результат)
-    for i in range(3):
-        final_result[i][2] = random.choice(symbols)
+        time.sleep(0.3)
     
     # Финальный результат
     grid_text = f"{''.join(final_result[0])}\n{''.join(final_result[1])}\n{''.join(final_result[2])}"
     try:
         bot.edit_message_text(
-            f"🎰 РЕЗУЛЬТАТ 🎰\n{grid_text}",
+            f"🎰 Результат\n{grid_text}",
             chat_id=chat_id,
             message_id=msg.message_id
         )
     except:
         pass
-    time.sleep(0.5)
     
     return final_result
 
@@ -1192,7 +1155,7 @@ def calculate_hand_value(hand):
     aces = 0
     
     for card in hand:
-        rank = card[:-2]  # убираем масть (2 символа эмодзи)
+        rank = card[:-2]  # убираем масть
         if rank in ['J', 'Q', 'K']:
             value += 10
         elif rank == 'A':
@@ -1211,14 +1174,14 @@ def calculate_hand_value(hand):
 def format_hand(hand, hide_dealer=False):
     """Форматирует руку для отображения"""
     if hide_dealer and len(hand) > 1:
-        return f"[{hand[0]}, ❓]"  # Первая карта дилера скрыта
+        return f"[{hand[0]}, ❓]"
     return "[" + ", ".join(hand) + "]"
 
 def get_blackjack_keyboard():
     """Клавиатура для блекджека"""
     markup = ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
     markup.add(
-        KeyboardButton("⬆️ Еще карту"),
+        KeyboardButton("⬆️ Еще"),
         KeyboardButton("✋ Хватит"),
         KeyboardButton("💰 Удвоить"),
         KeyboardButton("🔙 Назад")
@@ -1243,10 +1206,10 @@ if bot:
             ban_info = is_banned(user_id)
             if ban_info:
                 if ban_info['type'] == 'permanent':
-                    bot.send_message(user_id, "🚫 Вы забанены навсегда. Для разбана используйте /unban")
+                    bot.send_message(user_id, "🚫 Вы забанены навсегда\n/unban - запросить разбан")
                 else:
                     time_left = format_time_left(ban_info['time_left'])
-                    bot.send_message(user_id, f"🚫 Вы забанены. До разбана осталось: {time_left}")
+                    bot.send_message(user_id, f"🚫 Бан\nДо разбана: {time_left}")
                 return
 
             register_user(user_id,
@@ -1255,25 +1218,17 @@ if bot:
                           message.from_user.last_name)
 
             welcome_text = (
-                "🎰 Добро пожаловать в KVZDR HUB! 🎰\n\n"
-                "Доступные игры:\n"
+                "✨ Добро пожаловать\n\n"
+                f"💰 Баланс: {get_user_balance(user_id)} монет\n\n"
+                "🎮 Игры:\n"
                 "• /casino - игровые автоматы\n" 
-                "• /blackjack - карточная игра 21\n\n"
-                f"Ваш текущий баланс: {get_user_balance(user_id)} монет\n"
-                "Пополнить баланс можно через промокоды\n\n"
-                "📨 Связь с kvazador:\n"
-                "Для связи просто отправьте сообщение здесь. "
-                "Ответ может поступить через бота или в ЛС.\n\n"
-                "🎁 Пополнение баланса:\n"
-                "Запросите промокод через /get_promo и подождите пока его создаст модератор.\n"
-                "Активируйте его через /promo ПРОМОКОД\n"
-                "Каждый полученный промокод можно использовать только 1 раз!\n\n"
-                "Доступные команды:\n"
-                "/casino - игровые автоматы\n"
-                "/blackjack - карточная игра\n" 
-                "/balance - проверить баланс\n"
-                "/top - топ игроков\n"
-                "/help - помощь"
+                "• /blackjack - карточная игра\n\n"
+                "💬 Связь:\n"
+                "Отправьте сообщение - ответим здесь или в ЛС\n\n"
+                "🎁 Промокоды:\n"
+                "/get_promo - запросить промокод\n"
+                "/promo [код] - активировать\n\n"
+                "/help - все команды"
             )
 
             bot.send_message(user_id, welcome_text, reply_markup=get_main_keyboard())
@@ -1291,49 +1246,38 @@ if bot:
             
             if is_user_admin:
                 help_text = (
-                    "Доступные команды:\n\n"
-                    "Для пользователей:\n"
-                    "/start - начать работу\n"
-                    "/help - эта справка\n"
-                    "/casino - игровые автоматы\n"
-                    "/blackjack - карточная игра 21\n"
-                    "/balance - проверить баланс\n"
+                    "📋 Команды\n\n"
+                    "👤 Для всех:\n"
+                    "/start - начало\n"
+                    "/casino - слоты\n"
+                    "/blackjack - 21\n"
+                    "/balance - баланс\n"
                     "/top - топ игроков\n"
-                    "/promo [код] - активировать промокод\n"
-                    "/get_promo - запросить промокод\n"
-                    "/unban - запросить разбан\n\n"
-                    "Для админов:\n"
-                    "/admin - админ панель\n"
-                    "/add_promo [код] [сумма] - создать промокод\n"
-                    "/adminlogs [дни] - логи админов\n"
-                    "/restart - перезапуск бота\n"
-                    "/debug - отладка\n"
-                    "/myrights - мои права\n"
-                    "/sendall [сообщение] - рассылка\n"
-                    "/ban [id] [время] [причина] - бан\n"
-                    "/unban [id] - разбан\n"
-                    "/reply [id] - ответить пользователю\n"
-                    "/stop - выйти из режима ответа\n"
-                    "/addadmin [id] - добавить админа\n"
-                    "/removeadmin [id] - удалить админа\n"
-                    "/users - список пользователей\n"
-                    "/admins - список админов\n"
-                    "/stats - статистика\n"
-                    "/clearlogs - очистить логи\n"
-                    "/db - статистика БД"
+                    "/promo [код] - активировать\n"
+                    "/get_promo - запросить\n"
+                    "/unban - разбан\n\n"
+                    "👑 Админы:\n"
+                    "/admin - панель\n"
+                    "/add_promo [код] [сумма]\n"
+                    "/adminlogs [дни] - логи\n"
+                    "/sendall [текст] - рассылка\n"
+                    "/ban [id] [время] [причина]\n"
+                    "/unban [id]\n"
+                    "/reply [id] - ответить\n"
+                    "/users - список\n"
+                    "/stats - статистика"
                 )
             else:
                 help_text = (
-                    "Доступные команды:\n\n"
-                    "/start - начать работу\n"
-                    "/help - эта справка\n"
-                    "/casino - игровые автоматы\n"
-                    "/blackjack - карточная игра 21\n"
-                    "/balance - проверить баланс\n"
+                    "📋 Команды\n\n"
+                    "/start - начало\n"
+                    "/casino - слоты\n"
+                    "/blackjack - 21\n"
+                    "/balance - баланс\n"
                     "/top - топ игроков\n"
-                    "/promo [код] - активировать промокод\n"
-                    "/get_promo - запросить промокод\n"
-                    "/unban - запросить разбан"
+                    "/promo [код] - активировать\n"
+                    "/get_promo - запросить\n"
+                    "/unban - разбан"
                 )
             
             bot.send_message(user_id, help_text)
@@ -1349,11 +1293,11 @@ if bot:
             
             ban_info = is_banned(user_id)
             if ban_info:
-                bot.send_message(user_id, "🚫 Вы забанены и не можете использовать эту команду")
+                bot.send_message(user_id, "🚫 Вы забанены")
                 return
                 
             balance = get_user_balance(user_id)
-            bot.send_message(user_id, f"💰 Ваш текущий баланс: {balance} монет")
+            bot.send_message(user_id, f"💰 Баланс: {balance} монет")
             log_user_action(message.from_user, "check_balance")
             
         except Exception as e:
@@ -1366,22 +1310,22 @@ if bot:
             
             ban_info = is_banned(user_id)
             if ban_info:
-                bot.send_message(user_id, "🚫 Вы забанены и не можете использовать эту команду")
+                bot.send_message(user_id, "🚫 Вы забанены")
                 return
                 
             top_users = get_top_users(10)
             
             if not top_users:
-                bot.send_message(user_id, "📊 Пока нет данных о пользователях")
+                bot.send_message(user_id, "📊 Пока нет данных")
                 return
                 
-            top_text = "🏆 ТОП-10 ИГРОКОВ ПО БАЛАНСУ 🏆\n\n"
+            top_text = "🏆 ТОП-10\n\n"
             
             for i, user in enumerate(top_users, 1):
                 top_user_id, username, first_name, last_name, balance = user
                 name = f"@{username}" if username else first_name
                 medal = "🥇" if i == 1 else "🥈" if i == 2 else "🥉" if i == 3 else f"{i}."
-                top_text += f"{medal} {name} - {balance:,} монет\n"
+                top_text += f"{medal} {name} - {balance:,}\n"
             
             bot.send_message(user_id, top_text)
             log_user_action(message.from_user, "просмотрел топ игроков")
@@ -1396,19 +1340,18 @@ if bot:
             
             ban_info = is_banned(user_id)
             if ban_info:
-                bot.send_message(user_id, "🚫 Вы забанены и не можете использовать эту команду")
+                bot.send_message(user_id, "🚫 Вы забанены")
                 return
                 
             balance = get_user_balance(user_id)
             if balance < 100:
-                bot.send_message(user_id, "❌ Для игры в казино нужно минимум 100 монет")
+                bot.send_message(user_id, "❌ Минимум 100 монет")
                 return
             
             user_bet_mode[user_id] = True
             bot.send_message(
                 user_id,
-                f"💰 Ваш баланс: {balance} монет\n\n"
-                "Выберите ставку:",
+                f"💰 Баланс: {balance} монет\n\nВыберите ставку:",
                 reply_markup=get_custom_bet_keyboard()
             )
             log_user_action(message.from_user, "запустил казино")
@@ -1424,12 +1367,12 @@ if bot:
             
             ban_info = is_banned(user_id)
             if ban_info:
-                bot.send_message(user_id, "🚫 Вы забанены и не можете использовать эту команду")
+                bot.send_message(user_id, "🚫 Вы забанены")
                 return
                 
             balance = get_user_balance(user_id)
             if balance < 100:
-                bot.send_message(user_id, "❌ Для игры в блекджек нужно минимум 100 монет")
+                bot.send_message(user_id, "❌ Минимум 100 монет")
                 return
             
             user_blackjack_games[user_id] = {
@@ -1439,9 +1382,7 @@ if bot:
             
             bot.send_message(
                 user_id,
-                f"♠️ BLACKJACK ♠️\n\n"
-                f"💰 Ваш баланс: {balance} монет\n\n"
-                "Выберите ставку:",
+                f"♠️ BLACKJACK\n\n💰 Баланс: {balance} монет\n\nВыберите ставку:",
                 reply_markup=get_custom_bet_keyboard()
             )
             log_user_action(message.from_user, "начал блекджек")
@@ -1450,24 +1391,24 @@ if bot:
             logger.error(f"Error in /blackjack: {e}")
 
     # Обработка кнопки Blackjack в главном меню
-    @bot.message_handler(func=lambda message: message.text == "♠️ Играть в Blackjack")
+    @bot.message_handler(func=lambda message: message.text == "♠️ Блекджек")
     def blackjack_button(message):
         start_blackjack(message)
 
     # Обработка кнопки запуска казино
-    @bot.message_handler(func=lambda message: message.text == "🎰 Запустить бурмалду")
+    @bot.message_handler(func=lambda message: message.text == "🎰 Слоты")
     def casino_button(message):
         casino_start(message)
 
     # Обработка кнопки запроса промокода
-    @bot.message_handler(func=lambda message: message.text == "🎁 Запросить промокод")
+    @bot.message_handler(func=lambda message: message.text == "🎁 Промокод")
     def request_promo_button(message):
         try:
             user_id = message.from_user.id
             
             ban_info = is_banned(user_id)
             if ban_info:
-                bot.send_message(user_id, "🚫 Вы забанены и не можете использовать эту функцию")
+                bot.send_message(user_id, "🚫 Вы забанены")
                 return
                 
             # Отправляем запрос всем админам
@@ -1477,11 +1418,11 @@ if bot:
             for admin in admins:
                 try:
                     admin_id = admin[0]
-                    bot.send_message(admin_id, f"🎫 Пользователь {user_info} (ID: {user_id}) запросил промокод")
+                    bot.send_message(admin_id, f"🎫 {user_info} запросил промокод (ID: {user_id})")
                 except Exception as e:
                     logger.error(f"Failed to notify admin {admin[0]} about promo request: {e}")
                     
-            bot.send_message(user_id, "✅ Ваш запрос на промокод отправлен администраторам. Ожидайте создания промокода.")
+            bot.send_message(user_id, "✅ Запрос отправлен")
             log_user_action(message.from_user, "request_promo")
             
         except Exception as e:
@@ -1496,15 +1437,13 @@ if bot:
             if message.text == "🔙 Назад":
                 user_bet_mode[user_id] = False
                 user_custom_bet_mode[user_id] = False
-                bot.send_message(user_id, "✅ Возвращаемся в главное меню", reply_markup=get_main_keyboard())
+                bot.send_message(user_id, "↩️ Главное меню", reply_markup=get_main_keyboard())
                 return
             
             if message.text == "✏️ Ввести свою ставку":
                 user_custom_bet_mode[user_id] = True
                 bot.send_message(user_id, 
-                               "💵 Введите свою ставку (число):\n\n"
-                               "Минимальная ставка: 100 монет\n"
-                               "Максимальная ставка: ваш текущий баланс",
+                               "💵 Введите ставку:\n\nМин: 100 монет\nМакс: ваш баланс",
                                reply_markup=ReplyKeyboardRemove())
                 return
             
@@ -1516,11 +1455,11 @@ if bot:
                 bet_amount = int(message.text)
             
             if bet_amount > balance:
-                bot.send_message(user_id, f"❌ Недостаточно средств! Ваш баланс: {balance} монет", reply_markup=get_custom_bet_keyboard())
+                bot.send_message(user_id, f"❌ Недостаточно средств\nБаланс: {balance}", reply_markup=get_custom_bet_keyboard())
                 return
                 
             if bet_amount < 100:
-                bot.send_message(user_id, "❌ Минимальная ставка: 100 монет", reply_markup=get_custom_bet_keyboard())
+                bot.send_message(user_id, "❌ Мин. ставка: 100", reply_markup=get_custom_bet_keyboard())
                 return
             
             # Запускаем анимацию слотов
@@ -1537,32 +1476,31 @@ if bot:
                 new_balance = balance - bet_amount + total_win
                 update_user_balance(user_id, new_balance)
                 
-                result_text = f"🎉 ВЫ ВЫИГРАЛИ! 🎉\n\n"
-                result_text += f"💵 Ставка: {bet_amount} монет\n"
-                result_text += f"💰 Выигрыш: {total_win} монет\n"
-                result_text += f"💎 Новый баланс: {new_balance} монет\n\n"
-                result_text += "🏆 Выигрышные линии:\n" + "\n".join(winning_lines)
+                result_text = f"🎉 ВЫИГРЫШ\n\n"
+                result_text += f"💵 Ставка: {bet_amount}\n"
+                result_text += f"💰 Выигрыш: {total_win}\n"
+                result_text += f"💎 Баланс: {new_balance}\n\n"
+                if winning_lines:
+                    result_text += "🏆 Линии:\n" + "\n".join(winning_lines[:3])
                 
             else:
                 # Проигрыш
                 new_balance = balance - bet_amount
                 update_user_balance(user_id, new_balance)
                 
-                result_text = f"😞 ВЫ ПРОИГРАЛИ\n\n"
-                result_text += f"💵 Ставка: {bet_amount} монет\n"
-                result_text += f"💎 Новый баланс: {new_balance} монет\n"
-                result_text += "❌ Выигрышных линий нет"
+                result_text = f"😞 ПРОИГРЫШ\n\n"
+                result_text += f"💵 Ставка: {bet_amount}\n"
+                result_text += f"💎 Баланс: {new_balance}"
             
-            # ВОЗВРАЩАЕМ ГЛАВНОЕ МЕНЮ после результата
             bot.send_message(user_id, result_text, reply_markup=get_main_keyboard())
-            user_bet_mode[user_id] = False  # Выходим из режима выбора ставки
+            user_bet_mode[user_id] = False
             user_custom_bet_mode[user_id] = False
             
             log_user_action(message.from_user, f"сыграл в казино: ставка {bet_amount}, выигрыш {total_win}")
             
         except Exception as e:
             logger.error(f"Error in bet selection: {e}")
-            bot.send_message(user_id, "❌ Ошибка при запуске слотов", reply_markup=get_main_keyboard())
+            bot.send_message(user_id, "❌ Ошибка", reply_markup=get_main_keyboard())
             user_bet_mode[user_id] = False
             user_custom_bet_mode[user_id] = False
 
@@ -1576,15 +1514,15 @@ if bot:
             try:
                 bet_amount = int(message.text)
             except ValueError:
-                bot.send_message(user_id, "❌ Введите корректное число", reply_markup=get_custom_bet_keyboard())
+                bot.send_message(user_id, "❌ Введите число", reply_markup=get_custom_bet_keyboard())
                 return
             
             if bet_amount > balance:
-                bot.send_message(user_id, f"❌ Недостаточно средств! Ваш баланс: {balance} монет", reply_markup=get_custom_bet_keyboard())
+                bot.send_message(user_id, f"❌ Недостаточно\nБаланс: {balance}", reply_markup=get_custom_bet_keyboard())
                 return
                 
             if bet_amount < 100:
-                bot.send_message(user_id, "❌ Минимальная ставка: 100 монет", reply_markup=get_custom_bet_keyboard())
+                bot.send_message(user_id, "❌ Мин. 100", reply_markup=get_custom_bet_keyboard())
                 return
             
             # Запускаем анимацию слотов
@@ -1601,23 +1539,22 @@ if bot:
                 new_balance = balance - bet_amount + total_win
                 update_user_balance(user_id, new_balance)
                 
-                result_text = f"🎉 ВЫ ВЫИГРАЛИ! 🎉\n\n"
-                result_text += f"💵 Ставка: {bet_amount} монет\n"
-                result_text += f"💰 Выигрыш: {total_win} монет\n"
-                result_text += f"💎 Новый баланс: {new_balance} монет\n\n"
-                result_text += "🏆 Выигрышные линии:\n" + "\n".join(winning_lines)
+                result_text = f"🎉 ВЫИГРЫШ\n\n"
+                result_text += f"💵 Ставка: {bet_amount}\n"
+                result_text += f"💰 Выигрыш: {total_win}\n"
+                result_text += f"💎 Баланс: {new_balance}\n\n"
+                if winning_lines:
+                    result_text += "🏆 Линии:\n" + "\n".join(winning_lines[:3])
                 
             else:
                 # Проигрыш
                 new_balance = balance - bet_amount
                 update_user_balance(user_id, new_balance)
                 
-                result_text = f"😞 ВЫ ПРОИГРАЛИ\n\n"
-                result_text += f"💵 Ставка: {bet_amount} монет\n"
-                result_text += f"💎 Новый баланс: {new_balance} монет\n"
-                result_text += "❌ Выигрышных линий нет"
+                result_text = f"😞 ПРОИГРЫШ\n\n"
+                result_text += f"💵 Ставка: {bet_amount}\n"
+                result_text += f"💎 Баланс: {new_balance}"
             
-            # ВОЗВРАЩАЕМ ГЛАВНОЕ МЕНЮ после результата
             bot.send_message(user_id, result_text, reply_markup=get_main_keyboard())
             user_bet_mode[user_id] = False
             user_custom_bet_mode[user_id] = False
@@ -1626,7 +1563,7 @@ if bot:
             
         except Exception as e:
             logger.error(f"Error in custom bet: {e}")
-            bot.send_message(user_id, "❌ Ошибка при запуске слотов", reply_markup=get_main_keyboard())
+            bot.send_message(user_id, "❌ Ошибка", reply_markup=get_main_keyboard())
             user_bet_mode[user_id] = False
             user_custom_bet_mode[user_id] = False
 
@@ -1640,14 +1577,12 @@ if bot:
             
             if message.text == "🔙 Назад":
                 del user_blackjack_games[user_id]
-                bot.send_message(user_id, "✅ Возвращаемся в главное меню", reply_markup=get_main_keyboard())
+                bot.send_message(user_id, "↩️ Главное меню", reply_markup=get_main_keyboard())
                 return
             
             if message.text == "✏️ Ввести свою ставку":
                 bot.send_message(user_id, 
-                               "💵 Введите свою ставку (число):\n\n"
-                               "Минимальная ставка: 100 монет\n"
-                               "Максимальная ставка: ваш текущий баланс",
+                               "💵 Введите ставку:\n\nМин: 100 монет\nМакс: ваш баланс",
                                reply_markup=ReplyKeyboardRemove())
                 return
             
@@ -1659,15 +1594,15 @@ if bot:
                 try:
                     bet_amount = int(message.text)
                 except ValueError:
-                    bot.send_message(user_id, "❌ Введите корректное число", reply_markup=get_custom_bet_keyboard())
+                    bot.send_message(user_id, "❌ Введите число", reply_markup=get_custom_bet_keyboard())
                     return
             
             if bet_amount > balance:
-                bot.send_message(user_id, f"❌ Недостаточно средств! Ваш баланс: {balance} монет", reply_markup=get_custom_bet_keyboard())
+                bot.send_message(user_id, f"❌ Недостаточно\nБаланс: {balance}", reply_markup=get_custom_bet_keyboard())
                 return
                 
             if bet_amount < 100:
-                bot.send_message(user_id, "❌ Минимальная ставка: 100 монет", reply_markup=get_custom_bet_keyboard())
+                bot.send_message(user_id, "❌ Мин. 100", reply_markup=get_custom_bet_keyboard())
                 return
             
             # Создаем новую игру
@@ -1694,11 +1629,11 @@ if bot:
                 update_user_balance(user_id, new_balance)
                 
                 result_text = (
-                    f"🎉 BLACKJACK! 🎉\n\n"
+                    f"🎉 BLACKJACK!\n\n"
                     f"👤 Ваша рука: {format_hand(player_hand)} = {player_value}\n"
-                    f"💼 Рука дилера: {format_hand(dealer_hand)} = {calculate_hand_value(dealer_hand)}\n\n"
-                    f"💰 Выигрыш: {win_amount} монет (3:2)\n"
-                    f"💎 Новый баланс: {new_balance} монет"
+                    f"💼 Дилер: {format_hand(dealer_hand)} = {calculate_hand_value(dealer_hand)}\n\n"
+                    f"💰 Выигрыш: {win_amount}\n"
+                    f"💎 Баланс: {new_balance}"
                 )
                 
                 bot.send_message(user_id, result_text, reply_markup=get_main_keyboard())
@@ -1707,10 +1642,10 @@ if bot:
             else:
                 # Продолжаем игру
                 game_text = (
-                    f"♠️ BLACKJACK ♠️\n\n"
-                    f"💵 Ставка: {bet_amount} монет\n\n"
+                    f"♠️ BLACKJACK\n\n"
+                    f"💵 Ставка: {bet_amount}\n\n"
                     f"👤 Ваша рука: {format_hand(player_hand)} = {player_value}\n"
-                    f"💼 Рука дилера: {format_hand(dealer_hand, hide_dealer=True)}\n\n"
+                    f"💼 Дилер: {format_hand(dealer_hand, hide_dealer=True)}\n\n"
                     f"Выберите действие:"
                 )
                 
@@ -1718,7 +1653,7 @@ if bot:
                 
         except Exception as e:
             logger.error(f"Error in blackjack bet: {e}")
-            bot.send_message(user_id, "❌ Ошибка в игре", reply_markup=get_main_keyboard())
+            bot.send_message(user_id, "❌ Ошибка", reply_markup=get_main_keyboard())
             if user_id in user_blackjack_games:
                 del user_blackjack_games[user_id]
 
@@ -1734,15 +1669,15 @@ if bot:
             try:
                 bet_amount = int(message.text)
             except ValueError:
-                bot.send_message(user_id, "❌ Введите корректное число", reply_markup=get_custom_bet_keyboard())
+                bot.send_message(user_id, "❌ Введите число", reply_markup=get_custom_bet_keyboard())
                 return
             
             if bet_amount > balance:
-                bot.send_message(user_id, f"❌ Недостаточно средств! Ваш баланс: {balance} монет", reply_markup=get_custom_bet_keyboard())
+                bot.send_message(user_id, f"❌ Недостаточно\nБаланс: {balance}", reply_markup=get_custom_bet_keyboard())
                 return
                 
             if bet_amount < 100:
-                bot.send_message(user_id, "❌ Минимальная ставка: 100 монет", reply_markup=get_custom_bet_keyboard())
+                bot.send_message(user_id, "❌ Мин. 100", reply_markup=get_custom_bet_keyboard())
                 return
             
             # Создаем новую игру
@@ -1769,11 +1704,11 @@ if bot:
                 update_user_balance(user_id, new_balance)
                 
                 result_text = (
-                    f"🎉 BLACKJACK! 🎉\n\n"
+                    f"🎉 BLACKJACK!\n\n"
                     f"👤 Ваша рука: {format_hand(player_hand)} = {player_value}\n"
-                    f"💼 Рука дилера: {format_hand(dealer_hand)} = {calculate_hand_value(dealer_hand)}\n\n"
-                    f"💰 Выигрыш: {win_amount} монет (3:2)\n"
-                    f"💎 Новый баланс: {new_balance} монет"
+                    f"💼 Дилер: {format_hand(dealer_hand)} = {calculate_hand_value(dealer_hand)}\n\n"
+                    f"💰 Выигрыш: {win_amount}\n"
+                    f"💎 Баланс: {new_balance}"
                 )
                 
                 bot.send_message(user_id, result_text, reply_markup=get_main_keyboard())
@@ -1782,10 +1717,10 @@ if bot:
             else:
                 # Продолжаем игру
                 game_text = (
-                    f"♠️ BLACKJACK ♠️\n\n"
-                    f"💵 Ставка: {bet_amount} монет\n\n"
+                    f"♠️ BLACKJACK\n\n"
+                    f"💵 Ставка: {bet_amount}\n\n"
                     f"👤 Ваша рука: {format_hand(player_hand)} = {player_value}\n"
-                    f"💼 Рука дилера: {format_hand(dealer_hand, hide_dealer=True)}\n\n"
+                    f"💼 Дилер: {format_hand(dealer_hand, hide_dealer=True)}\n\n"
                     f"Выберите действие:"
                 )
                 
@@ -1793,7 +1728,7 @@ if bot:
                 
         except Exception as e:
             logger.error(f"Error in blackjack custom bet: {e}")
-            bot.send_message(user_id, "❌ Ошибка в игре", reply_markup=get_main_keyboard())
+            bot.send_message(user_id, "❌ Ошибка", reply_markup=get_main_keyboard())
             if user_id in user_blackjack_games:
                 del user_blackjack_games[user_id]
 
@@ -1806,8 +1741,7 @@ if bot:
             game_data = user_blackjack_games[user_id]
             
             if message.text == "🔙 Назад":
-                # Возвращаем ставку при выходе
-                bot.send_message(user_id, "✅ Игра отменена. Возвращаемся в главное меню", reply_markup=get_main_keyboard())
+                bot.send_message(user_id, "↩️ Главное меню", reply_markup=get_main_keyboard())
                 del user_blackjack_games[user_id]
                 return
             
@@ -1817,7 +1751,7 @@ if bot:
             bet_amount = game_data['bet']
             balance = game_data['balance']
             
-            if message.text == "⬆️ Еще карту":
+            if message.text == "⬆️ Еще":
                 # Игрок берет карту
                 player_hand.append(deck.pop())
                 player_value = calculate_hand_value(player_hand)
@@ -1828,11 +1762,11 @@ if bot:
                     update_user_balance(user_id, new_balance)
                     
                     result_text = (
-                        f"💥 ПЕРЕБОР! 💥\n\n"
+                        f"💥 ПЕРЕБОР\n\n"
                         f"👤 Ваша рука: {format_hand(player_hand)} = {player_value}\n"
-                        f"💼 Рука дилера: {format_hand(dealer_hand)} = {calculate_hand_value(dealer_hand)}\n\n"
-                        f"💵 Проигрыш: {bet_amount} монет\n"
-                        f"💎 Новый баланс: {new_balance} монет"
+                        f"💼 Дилер: {format_hand(dealer_hand)} = {calculate_hand_value(dealer_hand)}\n\n"
+                        f"💵 Проигрыш: {bet_amount}\n"
+                        f"💎 Баланс: {new_balance}"
                     )
                     
                     bot.send_message(user_id, result_text, reply_markup=get_main_keyboard())
@@ -1841,10 +1775,10 @@ if bot:
                 else:
                     # Продолжаем игру
                     game_text = (
-                        f"♠️ BLACKJACK ♠️\n\n"
-                        f"💵 Ставка: {bet_amount} монет\n\n"
+                        f"♠️ BLACKJACK\n\n"
+                        f"💵 Ставка: {bet_amount}\n\n"
                         f"👤 Ваша рука: {format_hand(player_hand)} = {player_value}\n"
-                        f"💼 Рука дилера: {format_hand(dealer_hand, hide_dealer=True)}\n\n"
+                        f"💼 Дилер: {format_hand(dealer_hand, hide_dealer=True)}\n\n"
                         f"Выберите действие:"
                     )
                     
@@ -1867,17 +1801,17 @@ if bot:
                     # Дилер перебрал - игрок выиграл
                     win_amount = bet_amount
                     new_balance = balance + win_amount
-                    result = "🎉 ВЫ ВЫИГРАЛИ! Дилер перебрал!"
+                    result = "🎉 ВЫИГРЫШ! Дилер перебрал"
                 elif dealer_value > player_value:
                     # Дилер выиграл
                     win_amount = -bet_amount
                     new_balance = balance - bet_amount
-                    result = "😞 ВЫ ПРОИГРАЛИ"
+                    result = "😞 ПРОИГРЫШ"
                 elif dealer_value < player_value:
                     # Игрок выиграл
                     win_amount = bet_amount
                     new_balance = balance + win_amount
-                    result = "🎉 ВЫ ВЫИГРАЛИ!"
+                    result = "🎉 ВЫИГРЫШ!"
                 else:
                     # Ничья
                     win_amount = 0
@@ -1889,17 +1823,17 @@ if bot:
                 result_text = (
                     f"{result}\n\n"
                     f"👤 Ваша рука: {format_hand(player_hand)} = {player_value}\n"
-                    f"💼 Рука дилера: {format_hand(dealer_hand)} = {dealer_value}\n\n"
+                    f"💼 Дилер: {format_hand(dealer_hand)} = {dealer_value}\n\n"
                 )
                 
                 if win_amount > 0:
-                    result_text += f"💰 Выигрыш: {win_amount} монет\n"
+                    result_text += f"💰 Выигрыш: {win_amount}\n"
                 elif win_amount < 0:
-                    result_text += f"💵 Проигрыш: {bet_amount} монет\n"
+                    result_text += f"💵 Проигрыш: {bet_amount}\n"
                 else:
                     result_text += "💰 Ставка возвращена\n"
                     
-                result_text += f"💎 Новый баланс: {new_balance} монет"
+                result_text += f"💎 Баланс: {new_balance}"
                 
                 bot.send_message(user_id, result_text, reply_markup=get_main_keyboard())
                 del user_blackjack_games[user_id]
@@ -1921,16 +1855,16 @@ if bot:
                     
                     # Определяем результат
                     if player_value > 21:
-                        result = "💥 ПЕРЕБОР!"
+                        result = "💥 ПЕРЕБОР"
                         win_amount = -bet_amount
                     elif dealer_value > 21:
-                        result = "🎉 ВЫ ВЫИГРАЛИ! Дилер перебрал!"
+                        result = "🎉 ВЫИГРЫШ! Дилер перебрал"
                         win_amount = bet_amount
                     elif dealer_value > player_value:
-                        result = "😞 ВЫ ПРОИГРАЛИ"
+                        result = "😞 ПРОИГРЫШ"
                         win_amount = -bet_amount
                     elif dealer_value < player_value:
-                        result = "🎉 ВЫ ВЫИГРАЛИ!"
+                        result = "🎉 ВЫИГРЫШ!"
                         win_amount = bet_amount
                     else:
                         result = "🤝 НИЧЬЯ"
@@ -1942,27 +1876,27 @@ if bot:
                     result_text = (
                         f"{result} (Удвоение)\n\n"
                         f"👤 Ваша рука: {format_hand(player_hand)} = {player_value}\n"
-                        f"💼 Рука дилера: {format_hand(dealer_hand)} = {dealer_value}\n\n"
+                        f"💼 Дилер: {format_hand(dealer_hand)} = {dealer_value}\n\n"
                     )
                     
                     if win_amount > 0:
-                        result_text += f"💰 Выигрыш: {win_amount} монет\n"
+                        result_text += f"💰 Выигрыш: {win_amount}\n"
                     elif win_amount < 0:
-                        result_text += f"💵 Проигрыш: {bet_amount} монет\n"
+                        result_text += f"💵 Проигрыш: {bet_amount}\n"
                     else:
                         result_text += "💰 Ставка возвращена\n"
                         
-                    result_text += f"💎 Новый баланс: {new_balance} монет"
+                    result_text += f"💎 Баланс: {new_balance}"
                     
                     bot.send_message(user_id, result_text, reply_markup=get_main_keyboard())
                     del user_blackjack_games[user_id]
                     log_user_action(message.from_user, f"blackjack удвоение: {result}")
                 else:
-                    bot.send_message(user_id, "❌ Недостаточно средств для удвоения!", reply_markup=get_blackjack_keyboard())
+                    bot.send_message(user_id, "❌ Недостаточно для удвоения!", reply_markup=get_blackjack_keyboard())
                     
         except Exception as e:
             logger.error(f"Error in blackjack action: {e}")
-            bot.send_message(user_id, "❌ Ошибка в игре", reply_markup=get_main_keyboard())
+            bot.send_message(user_id, "❌ Ошибка", reply_markup=get_main_keyboard())
             if user_id in user_blackjack_games:
                 del user_blackjack_games[user_id]
 
@@ -1973,7 +1907,7 @@ if bot:
             
             ban_info = is_banned(user_id)
             if ban_info:
-                bot.send_message(user_id, "🚫 Вы забанены и не можете использовать эту команду")
+                bot.send_message(user_id, "🚫 Вы забанены")
                 return
                 
             args = message.text.split()
@@ -2000,7 +1934,7 @@ if bot:
             
             ban_info = is_banned(user_id)
             if ban_info:
-                bot.send_message(user_id, "🚫 Вы забанены и не можете использовать эту команду")
+                bot.send_message(user_id, "🚫 Вы забанены")
                 return
                 
             # Отправляем запрос всем админам
@@ -2010,11 +1944,11 @@ if bot:
             for admin in admins:
                 try:
                     admin_id = admin[0]
-                    bot.send_message(admin_id, f"🎫 Пользователь {user_info} (ID: {user_id}) запросил промокод")
+                    bot.send_message(admin_id, f"🎫 {user_info} запросил промокод (ID: {user_id})")
                 except Exception as e:
                     logger.error(f"Failed to notify admin {admin[0]} about promo request: {e}")
                     
-            bot.send_message(user_id, "✅ Ваш запрос на промокод отправлен администраторам. Ожидайте создания промокода.")
+            bot.send_message(user_id, "✅ Запрос отправлен")
             log_user_action(message.from_user, "request_promo")
             
         except Exception as e:
@@ -2032,11 +1966,11 @@ if bot:
                 
             if ban_info['type'] != 'permanent':
                 time_left = format_time_left(ban_info['time_left'])
-                bot.send_message(user_id, f"⏳ Вы временно забанены. До разбана осталось: {time_left}")
+                bot.send_message(user_id, f"⏳ Временный бан\nДо разбана: {time_left}")
                 return
                 
             if not can_request_unban(user_id):
-                bot.send_message(user_id, "❌ Вы можете запрашивать разбан только раз в неделю")
+                bot.send_message(user_id, "❌ Раз в неделю")
                 return
                 
             # Отправляем запрос админам
@@ -2049,14 +1983,13 @@ if bot:
                     markup = InlineKeyboardMarkup()
                     markup.add(InlineKeyboardButton("✅ Разбанить", callback_data=f"unban_{user_id}"))
                     bot.send_message(admin_id, 
-                                   f"🔓 Пользователь {user_info} (ID: {user_id}) запросил разбан\n"
-                                   f"Причина бана: {ban_info.get('reason', 'Не указана')}",
+                                   f"🔓 {user_info} запросил разбан\nID: {user_id}\nПричина: {ban_info.get('reason', 'Не указана')}",
                                    reply_markup=markup)
                 except Exception as e:
                     logger.error(f"Failed to notify admin {admin[0]} about unban request: {e}")
                     
             update_unban_request_date(user_id)
-            bot.send_message(user_id, "✅ Ваш запрос на разбан отправлен администраторам. Ожидайте решения.")
+            bot.send_message(user_id, "✅ Запрос отправлен")
             log_user_action(message.from_user, "request_unban")
             
         except Exception as e:
@@ -2070,33 +2003,28 @@ if bot:
             user_id = message.from_user.id
             
             if not is_admin(user_id):
-                bot.send_message(user_id, "❌ У вас нет прав для этой команды")
+                bot.send_message(user_id, "❌ Нет прав")
                 return
                 
             admin_text = (
-                "Админ панель\n\n"
-                "Управление пользователями:\n"
-                "/ban [id] [время] [причина] - бан\n"
-                "/unban [id] - разбан\n"
-                "/reply [id] - ответить пользователю\n"
-                "/stop - выйти из режима ответа\n"
-                "/users - список пользователей\n\n"
-                "Промокоды:\n"
-                "/add_promo [код] [сумма] - создать промокод\n"
-                "/stats - статистика промокодов\n\n"
-                "Логи и статистика:\n"
-                "/adminlogs [дни] - логи админов\n"
-                "/clearlogs - очистить логи\n"
-                "/db - статистика БД\n\n"
-                "Управление админами:\n"
-                "/addadmin [id] - добавить админа\n"
-                "/removeadmin [id] - удалить админа\n"
-                "/admins - список админов\n"
-                "/myrights - мои права\n\n"
-                "Система:\n"
-                "/sendall [сообщение] - рассылка\n"
-                "/restart - перезапуск\n"
-                "/debug - отладка"
+                "👑 Админ панель\n\n"
+                "👥 Пользователи:\n"
+                "/ban [id] [время] [причина]\n"
+                "/unban [id]\n"
+                "/reply [id]\n"
+                "/stop\n"
+                "/users\n\n"
+                "🎁 Промокоды:\n"
+                "/add_promo [код] [сумма]\n"
+                "/stats\n\n"
+                "📊 Логи:\n"
+                "/adminlogs [дни]\n"
+                "/clearlogs\n"
+                "/db\n\n"
+                "⚙️ Система:\n"
+                "/sendall [текст]\n"
+                "/restart\n"
+                "/debug"
             )
             bot.send_message(user_id, admin_text)
             log_admin_action(message.from_user, "открыл админ панель")
@@ -2110,22 +2038,19 @@ if bot:
             user_id = message.from_user.id
             
             if not is_admin(user_id):
-                bot.send_message(user_id, "❌ У вас нет прав для этой команды")
+                bot.send_message(user_id, "❌ Нет прав")
                 return
                 
             args = message.text.split()[1:]
             if len(args) < 1:
-                bot.send_message(user_id, "❌ Использование: /reply [ID_пользователя]")
+                bot.send_message(user_id, "❌ /reply [ID]")
                 return
                 
             target_id = int(args[0])
             user_reply_mode[user_id] = target_id
             
             bot.send_message(user_id, 
-                           f"💬 Режим ответа включен для пользователя {target_id}\n"
-                           f"Отправьте сообщение, которое будет переслано пользователю.\n"
-                           f"Для выхода из режима используйте /stop")
-            # УБРАЛИ ЛОГИРОВАНИЕ ВКЛЮЧЕНИЯ РЕЖИМА ОТВЕТА
+                           f"💬 Ответ для {target_id}\nОтправьте сообщение\n/stop - выход")
             
         except Exception as e:
             logger.error(f"Error in /reply: {e}")
@@ -2137,10 +2062,9 @@ if bot:
             
             if user_id in user_reply_mode:
                 target_id = user_reply_mode.pop(user_id)
-                bot.send_message(user_id, f"✅ Режим ответа отключен для пользователя {target_id}")
-                # УБРАЛИ ЛОГИРОВАНИЕ ВЫКЛЮЧЕНИЯ РЕЖИМА ОТВЕТА
+                bot.send_message(user_id, f"✅ Ответ отключен для {target_id}")
             else:
-                bot.send_message(user_id, "❌ Режим ответа не активен")
+                bot.send_message(user_id, "❌ Не активен")
                 
         except Exception as e:
             logger.error(f"Error in /stop: {e}")
@@ -2156,8 +2080,7 @@ if bot:
             try:
                 if message.content_type == 'text':
                     bot.send_message(target_id, f"📨 Ответ от администратора:\n\n{message.text}")
-                    bot.send_message(admin_id, f"✅ Ответ отправлен пользователю {target_id}")
-                    # ЛОГИРУЕМ ТОЛЬКО САМ ОТВЕТ
+                    bot.send_message(admin_id, f"✅ Отправлено {target_id}")
                     log_admin_action(message.from_user, f"ответил {target_id} - {message.text}")
                 else:
                     # Для медиа-сообщений
@@ -2176,13 +2099,12 @@ if bot:
                     elif message.content_type == 'voice':
                         bot.send_voice(target_id, message.voice.file_id, caption=caption)
                     
-                    bot.send_message(admin_id, f"✅ Медиа-ответ отправлен пользователю {target_id}")
-                    # ЛОГИРУЕМ ТОЛЬКО САМ ОТВЕТ
+                    bot.send_message(admin_id, f"✅ Медиа отправлено {target_id}")
                     media_type = message.content_type
                     log_admin_action(message.from_user, f"ответил {target_id} - [{media_type}] {caption}")
                     
             except Exception as e:
-                bot.send_message(admin_id, f"❌ Не удалось отправить сообщение пользователю {target_id}")
+                bot.send_message(admin_id, f"❌ Не удалось отправить {target_id}")
                 logger.error(f"Failed to send reply to {target_id}: {e}")
                 
         except Exception as e:
@@ -2194,30 +2116,30 @@ if bot:
             user_id = message.from_user.id
             
             if not is_admin(user_id):
-                bot.send_message(user_id, "❌ У вас нет прав для этой команды")
+                bot.send_message(user_id, "❌ Нет прав")
                 return
                 
             args = message.text.split()[1:]
             if len(args) < 2:
-                bot.send_message(user_id, "❌ Использование: /add_promo [код] [сумма]")
+                bot.send_message(user_id, "❌ /add_promo [код] [сумма]")
                 return
                 
             promocode = args[0]
             try:
                 value = int(args[1])
             except ValueError:
-                bot.send_message(user_id, "❌ Сумма должна быть числом")
+                bot.send_message(user_id, "❌ Сумма - число")
                 return
                 
             if value <= 0:
-                bot.send_message(user_id, "❌ Сумма должна быть положительной")
+                bot.send_message(user_id, "❌ Сумма > 0")
                 return
                 
             if add_promocode(promocode, value):
-                bot.send_message(user_id, f"✅ Промокод {promocode} на {value} монет создан!")
-                log_admin_action(message.from_user, f"создал промокод {promocode} на {value} монет")
+                bot.send_message(user_id, f"✅ Промокод {promocode} на {value}")
+                log_admin_action(message.from_user, f"создал промокод {promocode} на {value}")
             else:
-                bot.send_message(user_id, "❌ Ошибка при создании промокода")
+                bot.send_message(user_id, "❌ Ошибка")
                 
         except Exception as e:
             logger.error(f"Error in /add_promo: {e}")
@@ -2228,7 +2150,7 @@ if bot:
             user_id = message.from_user.id
             
             if not is_admin(user_id):
-                bot.send_message(user_id, "❌ У вас нет прав для этой команды")
+                bot.send_message(user_id, "❌ Нет прав")
                 return
                 
             args = message.text.split()[1:]
@@ -2237,15 +2159,15 @@ if bot:
                 try:
                     days = int(args[0])
                     if days <= 0 or days > 365:
-                        bot.send_message(user_id, "❌ Диапазон дней: 1-365")
+                        bot.send_message(user_id, "❌ 1-365 дней")
                         return
                 except ValueError:
-                    bot.send_message(user_id, "❌ Количество дней должно быть числом")
+                    bot.send_message(user_id, "❌ Число дней")
                     return
             
             logs = get_admin_logs(days=days)
             if not logs:
-                bot.send_message(user_id, f"📊 Логов за {days} дней не найдено")
+                bot.send_message(user_id, f"📊 Нет логов за {days} дней")
                 return
                 
             formatted_logs = format_admin_logs_for_display(logs, days=days)
@@ -2270,10 +2192,10 @@ if bot:
             user_id = message.from_user.id
             
             if not is_admin(user_id):
-                bot.send_message(user_id, "❌ У вас нет прав для этой команды")
+                bot.send_message(user_id, "❌ Нет прав")
                 return
                 
-            bot.send_message(user_id, "🔄 Перезапуск бота...")
+            bot.send_message(user_id, "🔄 Перезапуск...")
             logger.info(f"Admin {user_id} initiated restart")
             log_admin_action(message.from_user, "перезапустил бота")
             
@@ -2290,7 +2212,7 @@ if bot:
             user_id = message.from_user.id
             
             if not is_admin(user_id):
-                bot.send_message(user_id, "❌ У вас нет прав для этой команды")
+                bot.send_message(user_id, "❌ Нет прав")
                 return
                 
             user_count = get_user_count()
@@ -2298,12 +2220,14 @@ if bot:
             stats = get_promocode_stats()
             
             debug_info = (
-                "Информация о системе:\n\n"
-                f"Пользователей: {user_count}\n"
-                f"Админов: {len(admins)}\n"
-                f"Промокодов: {stats['total']} (использовано: {stats['used']}, доступно: {stats['available']})\n"
-                f"Время: {get_current_time()}\n"
-                f"Режим: {'WEBHOOK' if os.environ.get('RENDER') else 'POLLING'}"
+                "📊 Система\n\n"
+                f"👥 Пользователей: {user_count}\n"
+                f"👑 Админов: {len(admins)}\n"
+                f"🎫 Промокодов: {stats['total']}\n"
+                f"✅ Использовано: {stats['used']}\n"
+                f"🆓 Доступно: {stats['available']}\n"
+                f"🕒 Время: {get_current_time()}\n"
+                f"🔧 Режим: {'WEBHOOK' if os.environ.get('RENDER') else 'POLLING'}"
             )
             bot.send_message(user_id, debug_info)
             log_admin_action(message.from_user, "запросил отладочную информацию")
@@ -2317,13 +2241,13 @@ if bot:
             user_id = message.from_user.id
             
             if not is_admin(user_id):
-                bot.send_message(user_id, "❌ Вы не являетесь администратором")
+                bot.send_message(user_id, "❌ Не админ")
                 return
                 
             is_main = is_main_admin(user_id)
-            rights_text = "👑 Вы главный администратор" if is_main else "⚡ Вы администратор"
+            rights_text = "👑 Главный администратор" if is_main else "⚡ Администратор"
             bot.send_message(user_id, rights_text)
-            log_admin_action(message.from_user, "проверил свои права")
+            log_admin_action(message.from_user, "проверил права")
             
         except Exception as e:
             logger.error(f"Error in /myrights: {e}")
@@ -2334,12 +2258,12 @@ if bot:
             user_id = message.from_user.id
             
             if not is_admin(user_id):
-                bot.send_message(user_id, "❌ У вас нет прав для этой команды")
+                bot.send_message(user_id, "❌ Нет прав")
                 return
                 
             args = message.text.split()[1:]
             if not args:
-                bot.send_message(user_id, "❌ Использование: /sendall [сообщение]")
+                bot.send_message(user_id, "❌ /sendall [текст]")
                 return
                 
             broadcast_text = ' '.join(args)
@@ -2347,18 +2271,18 @@ if bot:
             success_count = 0
             total_count = len(users)
             
-            bot.send_message(user_id, f"📢 Начинаю рассылку для {total_count} пользователей...")
+            bot.send_message(user_id, f"📢 Рассылка для {total_count}...")
             
             for user in users:
                 try:
                     user_id_to_send = user[0]
                     bot.send_message(user_id_to_send, broadcast_text)
                     success_count += 1
-                    time.sleep(0.1)  # Задержка чтобы не превысить лимиты
+                    time.sleep(0.1)
                 except Exception as e:
                     logger.error(f"Failed to send broadcast to {user[0]}: {e}")
                     
-            bot.send_message(user_id, f"✅ Рассылка завершена\nУспешно: {success_count}/{total_count}")
+            bot.send_message(user_id, f"✅ Успешно: {success_count}/{total_count}")
             log_admin_action(message.from_user, f"сделал рассылку: {broadcast_text[:50]}...")
             
         except Exception as e:
@@ -2370,12 +2294,12 @@ if bot:
             user_id = message.from_user.id
             
             if not is_admin(user_id):
-                bot.send_message(user_id, "❌ У вас нет прав для этой команды")
+                bot.send_message(user_id, "❌ Нет прав")
                 return
                 
             args = message.text.split()[1:]
             if len(args) < 1:
-                bot.send_message(user_id, "❌ Использование: /ban [id] [время_в_секундах] [причина]")
+                bot.send_message(user_id, "❌ /ban [id] [время] [причина]")
                 return
                 
             target_id = int(args[0])
@@ -2386,10 +2310,10 @@ if bot:
                 try:
                     duration = int(args[1])
                     if duration <= 0:
-                        bot.send_message(user_id, "❌ Время должно быть положительным числом")
+                        bot.send_message(user_id, "❌ Время > 0")
                         return
                 except ValueError:
-                    bot.send_message(user_id, "❌ Время должно быть числом")
+                    bot.send_message(user_id, "❌ Время - число")
                     return
                     
             if len(args) >= 3:
@@ -2400,21 +2324,21 @@ if bot:
             if ban_user(target_id, ban_type, duration, reason, user_id):
                 if duration:
                     time_str = format_time_left(duration)
-                    bot.send_message(user_id, f"✅ Пользователь {target_id} забанен на {time_str}\nПричина: {reason}")
+                    bot.send_message(user_id, f"✅ {target_id} забанен на {time_str}\nПричина: {reason}")
                 else:
-                    bot.send_message(user_id, f"✅ Пользователь {target_id} забанен навсегда\nПричина: {reason}")
+                    bot.send_message(user_id, f"✅ {target_id} забанен навсегда\nПричина: {reason}")
                     
                 try:
                     if duration:
-                        bot.send_message(target_id, f"🚫 Вы забанены на {time_str}\nПричина: {reason}")
+                        bot.send_message(target_id, f"🚫 Бан на {time_str}\nПричина: {reason}")
                     else:
-                        bot.send_message(target_id, f"🚫 Вы забанены навсегда\nПричина: {reason}")
+                        bot.send_message(target_id, f"🚫 Перманентный бан\nПричина: {reason}")
                 except:
                     pass
                     
-                log_admin_action(message.from_user, f"забанил пользователя {target_id}", f"время: {duration} сек, причина: {reason}")
+                log_admin_action(message.from_user, f"забанил {target_id}", f"время: {duration} сек, причина: {reason}")
             else:
-                bot.send_message(user_id, "❌ Ошибка при бане пользователя")
+                bot.send_message(user_id, "❌ Ошибка")
                 
         except Exception as e:
             logger.error(f"Error in /ban: {e}")
@@ -2425,27 +2349,27 @@ if bot:
             user_id = message.from_user.id
             
             if not is_admin(user_id):
-                bot.send_message(user_id, "❌ У вас нет прав для этой команды")
+                bot.send_message(user_id, "❌ Нет прав")
                 return
                 
             args = message.text.split()[1:]
             if len(args) < 1:
-                bot.send_message(user_id, "❌ Использование: /unban [id]")
+                bot.send_message(user_id, "❌ /unban [id]")
                 return
                 
             target_id = int(args[0])
             
             if unban_user(target_id):
-                bot.send_message(user_id, f"✅ Пользователь {target_id} разбанен")
+                bot.send_message(user_id, f"✅ {target_id} разбанен")
                 
                 try:
-                    bot.send_message(target_id, "✅ Вы были разбанены")
+                    bot.send_message(target_id, "✅ Вы разбанены")
                 except:
                     pass
                     
-                log_admin_action(message.from_user, f"разбанил пользователя {target_id}")
+                log_admin_action(message.from_user, f"разбанил {target_id}")
             else:
-                bot.send_message(user_id, "❌ Ошибка при разбане пользователя")
+                bot.send_message(user_id, "❌ Ошибка")
                 
         except Exception as e:
             logger.error(f"Error in /unban: {e}")
@@ -2456,12 +2380,12 @@ if bot:
             user_id = message.from_user.id
             
             if not is_main_admin(user_id):
-                bot.send_message(user_id, "❌ Только главный администратор может добавлять админов")
+                bot.send_message(user_id, "❌ Только главный")
                 return
                 
             args = message.text.split()[1:]
             if len(args) < 1:
-                bot.send_message(user_id, "❌ Использование: /addadmin [id]")
+                bot.send_message(user_id, "❌ /addadmin [id]")
                 return
                 
             target_id = int(args[0])
@@ -2470,12 +2394,12 @@ if bot:
             try:
                 target_user = bot.get_chat(target_id)
                 if add_admin(target_id, target_user.username, target_user.first_name):
-                    bot.send_message(user_id, f"✅ Пользователь {target_user.first_name} ({target_id}) добавлен как администратор")
+                    bot.send_message(user_id, f"✅ {target_user.first_name} добавлен")
                     log_admin_action(message.from_user, f"добавил администратора {target_id}")
                 else:
-                    bot.send_message(user_id, "❌ Ошибка при добавлении администратора")
+                    bot.send_message(user_id, "❌ Ошибка")
             except Exception as e:
-                bot.send_message(user_id, f"❌ Не удалось найти пользователя с ID {target_id}")
+                bot.send_message(user_id, f"❌ Не найден {target_id}")
                 
         except Exception as e:
             logger.error(f"Error in /addadmin: {e}")
@@ -2486,21 +2410,21 @@ if bot:
             user_id = message.from_user.id
             
             if not is_main_admin(user_id):
-                bot.send_message(user_id, "❌ Только главный администратор может удалять админов")
+                bot.send_message(user_id, "❌ Только главный")
                 return
                 
             args = message.text.split()[1:]
             if len(args) < 1:
-                bot.send_message(user_id, "❌ Использование: /removeadmin [id]")
+                bot.send_message(user_id, "❌ /removeadmin [id]")
                 return
                 
             target_id = int(args[0])
             
             if remove_admin(target_id):
-                bot.send_message(user_id, f"✅ Администратор {target_id} удален")
+                bot.send_message(user_id, f"✅ {target_id} удален")
                 log_admin_action(message.from_user, f"удалил администратора {target_id}")
             else:
-                bot.send_message(user_id, "❌ Ошибка при удалении администратора")
+                bot.send_message(user_id, "❌ Ошибка")
                 
         except Exception as e:
             logger.error(f"Error in /removeadmin: {e}")
@@ -2511,22 +2435,22 @@ if bot:
             admin_id = message.from_user.id
             
             if not is_admin(admin_id):
-                bot.send_message(admin_id, "❌ У вас нет прав для этой команды")
+                bot.send_message(admin_id, "❌ Нет прав")
                 return
                 
             users = get_all_users()
             if not users:
-                bot.send_message(admin_id, "📊 Пользователей нет")
+                bot.send_message(admin_id, "📊 Нет пользователей")
                 return
                 
-            users_text = f"📊 Всего пользователей: {len(users)}\n\n"
+            users_text = f"👥 Всего: {len(users)}\n\n"
             for i, user in enumerate(users[:50], 1):
                 user_id, username, first_name, last_name = user
                 name = f"{first_name} {last_name}" if last_name else first_name
                 users_text += f"{i}. {name} (@{username}) - {user_id}\n"
                 
             if len(users) > 50:
-                users_text += f"\n... и еще {len(users) - 50} пользователей"
+                users_text += f"\n... и еще {len(users) - 50}"
                 
             bot.send_message(admin_id, users_text)
             log_admin_action(message.from_user, "просмотрел список пользователей")
@@ -2540,11 +2464,11 @@ if bot:
             current_user_id = message.from_user.id
             
             if not is_admin(current_user_id):
-                bot.send_message(current_user_id, "❌ У вас нет прав для этой команды")
+                bot.send_message(current_user_id, "❌ Нет прав")
                 return
                 
             admins = get_all_admins()
-            admins_text = "👑 Список администраторов:\n\n"
+            admins_text = "👑 Администраторы:\n\n"
             
             for admin in admins:
                 admin_id, username, first_name, is_main = admin
@@ -2563,7 +2487,7 @@ if bot:
             user_id = message.from_user.id
             
             if not is_admin(user_id):
-                bot.send_message(user_id, "❌ У вас нет прав для этой команды")
+                bot.send_message(user_id, "❌ Нет прав")
                 return
                 
             user_count = get_user_count()
@@ -2571,13 +2495,13 @@ if bot:
             stats = get_promocode_stats()
             
             stats_text = (
-                "📊 Статистика бота:\n\n"
+                "📊 Статистика\n\n"
                 f"👥 Пользователей: {user_count}\n"
                 f"👑 Админов: {len(admins)}\n"
-                f"🎫 Промокодов всего: {stats['total']}\n"
+                f"🎫 Промокодов: {stats['total']}\n"
                 f"✅ Использовано: {stats['used']}\n"
                 f"🆓 Доступно: {stats['available']}\n"
-                f"🕒 Время сервера: {get_current_time()}"
+                f"🕒 Время: {get_current_time()}"
             )
             bot.send_message(user_id, stats_text)
             log_admin_action(message.from_user, "просмотрел статистику")
@@ -2591,14 +2515,14 @@ if bot:
             user_id = message.from_user.id
             
             if not is_admin(user_id):
-                bot.send_message(user_id, "❌ У вас нет прав для этой команды")
+                bot.send_message(user_id, "❌ Нет прав")
                 return
                 
             db_info = get_db_size()
             
-            db_text = "🗃️ Статистика базы данных:\n\n"
-            db_text += f"📊 Общий размер: {db_info['total_size']}\n\n"
-            db_text += "📋 Размеры таблиц:\n"
+            db_text = "🗃️ База данных\n\n"
+            db_text += f"📊 Размер: {db_info['total_size']}\n\n"
+            db_text += "📋 Таблицы:\n"
             
             for table in db_info['tables']:
                 table_name, table_size = table
@@ -2616,16 +2540,16 @@ if bot:
             user_id = message.from_user.id
             
             if not is_admin(user_id):
-                bot.send_message(user_id, "❌ У вас нет прав для этой команды")
+                bot.send_message(user_id, "❌ Нет прав")
                 return
                 
             try:
                 with open(ADMIN_LOGFILE, 'w', encoding='utf-8') as f:
                     f.write('')
-                bot.send_message(user_id, "✅ Логи администраторов очищены")
-                log_admin_action(message.from_user, "очистил логи администраторов")
+                bot.send_message(user_id, "✅ Логи очищены")
+                log_admin_action(message.from_user, "очистил логи")
             except Exception as e:
-                bot.send_message(user_id, "❌ Ошибка при очистке логов")
+                bot.send_message(user_id, "❌ Ошибка")
                 logger.error(f"Error clearing logs: {e}")
                 
         except Exception as e:
@@ -2638,41 +2562,38 @@ if bot:
             user_id = call.from_user.id
             
             if not is_admin(user_id):
-                bot.answer_callback_query(call.id, "❌ У вас нет прав для этого действия")
+                bot.answer_callback_query(call.id, "❌ Нет прав")
                 return
                 
             if call.data.startswith('unban_'):
                 target_id = int(call.data.split('_')[1])
                 
                 if unban_user(target_id):
-                    bot.answer_callback_query(call.id, "✅ Пользователь разбанен")
+                    bot.answer_callback_query(call.id, "✅ Разбанен")
                     bot.edit_message_text(
-                        f"✅ Пользователь {target_id} разбанен администратором {call.from_user.first_name}",
+                        f"✅ {target_id} разбанен {call.from_user.first_name}",
                         chat_id=call.message.chat.id,
                         message_id=call.message.message_id
                     )
                     
                     try:
-                        bot.send_message(target_id, "✅ Вы были разбанены администратором")
+                        bot.send_message(target_id, "✅ Вы разбанены")
                     except:
                         pass
                         
-                    log_admin_action(call.from_user, f"разбанил пользователя {target_id} через кнопку")
+                    log_admin_action(call.from_user, f"разбанил {target_id} через кнопку")
                 else:
-                    bot.answer_callback_query(call.id, "❌ Ошибка при разбане")
+                    bot.answer_callback_query(call.id, "❌ Ошибка")
                     
             elif call.data.startswith('reply_'):
                 target_id = int(call.data.split('_')[1])
                 user_reply_mode[user_id] = target_id
                 
-                bot.answer_callback_query(call.id, "💬 Режим ответа включен")
+                bot.answer_callback_query(call.id, "💬 Режим ответа")
                 bot.send_message(
                     user_id,
-                    f"💬 Режим ответа включен для пользователя {target_id}\n"
-                    f"Отправьте сообщение, которое будет переслано пользователю.\n"
-                    f"Для выхода из режима используйте /stop"
+                    f"💬 Ответ для {target_id}\nОтправьте сообщение\n/stop - выход"
                 )
-                # УБРАЛИ ЛОГИРОВАНИЕ ВКЛЮЧЕНИЯ РЕЖИМА ОТВЕТА ЧЕРЕЗ КНОПКУ
                 
         except Exception as e:
             logger.error(f"Error in callback handler: {e}")
@@ -2689,13 +2610,13 @@ if bot:
                 
             ban_info = is_banned(user_id)
             if ban_info:
-                bot.send_message(user_id, "🚫 Вы забанены и не можете отправлять сообщения")
+                bot.send_message(user_id, "🚫 Вы забанены")
                 return
                 
             # Проверяем кулдаун
             cooldown = check_cooldown(user_id)
             if cooldown > 0:
-                bot.send_message(user_id, f"⏳ Подождите {int(cooldown)} секунд перед отправкой следующего сообщения")
+                bot.send_message(user_id, f"⏳ Подождите {int(cooldown)} сек")
                 return
                 
             register_user(user_id,
@@ -2718,11 +2639,11 @@ if bot:
                     # Пересылаем сообщение в зависимости от типа
                     if message.content_type == 'text':
                         bot.send_message(admin_id, 
-                                       f"📩 Сообщение от {user_info} (ID: {user_id}):\n\n{message.text}",
+                                       f"📩 {user_info} (ID: {user_id}):\n\n{message.text}",
                                        reply_markup=markup)
                     else:
-                        # Для медиа-сообщений сначала отправляем текст, потом медиа
-                        caption = f"📩 Сообщение от {user_info} (ID: {user_id})"
+                        # Для медиа-сообщений
+                        caption = f"📩 {user_info} (ID: {user_id})"
                         if message.caption:
                             caption += f"\n\n{message.caption}"
                             
@@ -2740,7 +2661,7 @@ if bot:
                 except Exception as e:
                     logger.error(f"Failed to forward message to admin {admin[0]}: {e}")
                     
-            bot.send_message(user_id, "✅ Ваше сообщение отправлено!")
+            bot.send_message(user_id, "✅ Отправлено!")
             log_user_action(message.from_user, "отправил сообщение")
             
         except Exception as e:
@@ -2759,8 +2680,7 @@ if bot:
             # Проверяем, начинается ли сообщение с команды
             if message.text and message.text.startswith('/'):
                 bot.send_message(user_id, 
-                               "❌ Неизвестная команда\n"
-                               "Используйте /help для просмотра доступных команд")
+                               "❌ Неизвестная команда\n/help - все команды")
                 log_user_action(message.from_user, f"ввел неизвестную команду: {message.text}")
                 
         except Exception as e:
