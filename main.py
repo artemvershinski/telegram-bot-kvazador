@@ -826,6 +826,29 @@ user_blackjack_games = {}
 def send_welcome(message):
     try:
         user_id = int(message.from_user.id)
+        
+        # ПОЛНАЯ ОЧИСТКА ВСЕХ РЕЖИМОВ ДЛЯ ЭТОГО ПОЛЬЗОВАТЕЛЯ
+        user_reply_mode.pop(user_id, None)
+        user_broadcast_mode.pop(user_id, None)
+        user_support_mode.pop(user_id, None)
+        user_custom_bet_mode.pop(user_id, None)
+        user_find_mode.pop(user_id, None)
+        user_add_admin_mode.pop(user_id, None)
+        user_remove_admin_mode.pop(user_id, None)
+        user_blackjack_games.pop(user_id, None)
+        
+        # ОЧИСТКА ИСТОРИИ СООБЩЕНИЙ - удаляем все предыдущие сообщения бота
+        try:
+            # Получаем историю сообщений
+            for i in range(message.message_id - 1, max(0, message.message_id - 50), -1):
+                try:
+                    bot.delete_message(user_id, i)
+                except:
+                    pass
+        except Exception as e:
+            logger.debug(f"Could not clear message history: {e}")
+        
+        # Проверяем бан
         ban_info = is_banned(user_id)
         if ban_info:
             if ban_info['type'] == 'permanent':
@@ -841,7 +864,6 @@ def send_welcome(message):
         if len(args) > 1:
             try:
                 referrer_id = int(args[1])
-                # Проверяем что реферер существует и не является самим пользователем
                 if referrer_id == user_id:
                     referrer_id = None
             except:
@@ -854,23 +876,42 @@ def send_welcome(message):
                       referrer_id)
         
         balance = get_user_balance(user_id)
-        welcome_text = f"🎉 Добро пожаловать в WERB HUB!\n\n💰 Баланс: {balance} монет"
         
-        # Если был реферер, сообщаем о бонусе
-        if referrer_id:
-            welcome_text += f"\n\n🎁 Вы пришли по реферальной ссылке! Получено 500 монет"
+        # СОЗДАЕМ ПРИВЕТСТВЕННОЕ СООБЩЕНИЕ С КНОПКАМИ
+        if is_admin(user_id):
+            # Для админов
+            welcome_text = f"🛠 Добро пожаловать в АДМИН ПАНЕЛЬ!\n\n💰 Баланс: {balance} монет"
+            markup = get_main_admin_keyboard()
+        else:
+            # Для пользователей
+            welcome_text = f"🎉 Добро пожаловать в WERB HUB!\n\n💰 Баланс: {balance} монет"
+            
+            # Добавляем реферальную информацию если был реферер
+            if referrer_id:
+                welcome_text += f"\n\n🎁 Вы пришли по реферальной ссылке! Получено 500 монет"
+            
+            # Добавляем реферальную ссылку
+            ref_link = f"https://t.me/{bot.get_me().username}?start={user_id}"
+            welcome_text += f"\n\n👥 Приглашайте друзей и получайте 500 монет за каждого!\nВаша ссылка:\n`{ref_link}`"
+            
+            markup = get_main_user_keyboard()
         
-        # Добавляем реферальную ссылку
-        ref_link = f"https://t.me/{bot.get_me().username}?start={user_id}"
-        welcome_text += f"\n\n👥 Приглашайте друзей и получайте 500 монет за каждого!\nВаша ссылка:\n`{ref_link}`"
+        # УДАЛЯЕМ КОМАНДУ /start
+        try:
+            bot.delete_message(user_id, message.message_id)
+        except:
+            pass
         
+        # ОТПРАВЛЯЕМ НОВОЕ ПРИВЕТСТВЕННОЕ СООБЩЕНИЕ
         bot.send_message(
             user_id, 
             welcome_text,
             parse_mode='Markdown',
-            reply_markup=get_main_user_keyboard()
+            reply_markup=markup
         )
+        
         log_user_action(message.from_user, "start")
+        
     except Exception as e:
         logger.exception("Error in /start handler for message: %s", message)
 
