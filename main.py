@@ -197,8 +197,7 @@ def get_main_user_keyboard():
         InlineKeyboardButton("💬 Поддержка", callback_data="user_support"),
         InlineKeyboardButton("🏆 Топ игроков", callback_data="user_top"),
         InlineKeyboardButton("👥 Рефералы", callback_data="user_referrals"),
-        InlineKeyboardButton("💰 Баланс", callback_data="user_balance"),
-        InlineKeyboardButton("❓ Помощь", callback_data="user_help")
+        InlineKeyboardButton("💰 Баланс", callback_data="user_balance")
     )
     return keyboard
 
@@ -251,8 +250,7 @@ def get_main_admin_keyboard():
         InlineKeyboardButton("📋 Логи", callback_data="admin_stats_logs"),
         InlineKeyboardButton("🗑 Очистить БД", callback_data="admin_clear_db"),
         InlineKeyboardButton("➕ Добавить админа", callback_data="admin_add_admin"),
-        InlineKeyboardButton("➖ Удалить админа", callback_data="admin_remove_admin"),
-        InlineKeyboardButton("❓ Помощь", callback_data="admin_help")
+        InlineKeyboardButton("➖ Удалить админа", callback_data="admin_remove_admin")
     )
     return keyboard
 
@@ -764,13 +762,23 @@ def spin_slots_animation(bot, chat_id, message_id, bet_amount, user_id):
         [random.choice(symbols) for _ in range(3)]
     ]
     
-    # Быстрая анимация без зависаний
-    for i in range(3):
+    # УЛУЧШЕННАЯ АНИМАЦИЯ СЛОТОВ - более долгая и красивая
+    animation_steps = 8
+    for step in range(animation_steps):
         temp_result = [
             [random.choice(symbols) for _ in range(3)],
             [random.choice(symbols) for _ in range(3)],
             [random.choice(symbols) for _ in range(3)]
         ]
+        
+        # Добавляем эффект замедления к концу анимации
+        if step < animation_steps - 3:
+            delay = 0.3
+        elif step < animation_steps - 1:
+            delay = 0.5
+        else:
+            delay = 0.7
+            
         grid_text = f"{''.join(temp_result[0])}\n{''.join(temp_result[1])}\n{''.join(temp_result[2])}"
         try:
             bot.edit_message_text(
@@ -778,7 +786,7 @@ def spin_slots_animation(bot, chat_id, message_id, bet_amount, user_id):
                 chat_id=chat_id,
                 message_id=message_id
             )
-            time.sleep(0.3)
+            time.sleep(delay)
         except:
             pass
     
@@ -1024,23 +1032,6 @@ def handle_user_callbacks(call):
                     message_id=call.message.message_id,
                     reply_markup=get_back_keyboard()
                 )
-        elif call.data == 'user_help':
-            help_text = (
-                "🎮 ДОСТУПНЫЕ КОМАНДЫ:\n\n"
-                "/start - Главное меню\n"
-                "/balance - Баланс\n"
-                "/top - Топ игроков\n"
-                "/promo КОД - Активировать промокод\n"
-                "/get_promo - Запросить промокод\n"
-                "/unban - Запрос разбана\n\n"
-                "🎰 Игры доступны через главное меню"
-            )
-            bot.edit_message_text(
-                help_text,
-                chat_id=call.message.chat.id,
-                message_id=call.message.message_id,
-                reply_markup=get_back_keyboard()
-            )
         elif call.data == 'user_balance':
             bot.edit_message_text(
                 f"💰 Баланс: {balance} монет",
@@ -1366,7 +1357,11 @@ def admin_panel(message):
     try:
         user_id = message.from_user.id
         if not is_admin(user_id):
-            bot.send_message(user_id, "❌ Нет прав доступа")
+            # УДАЛЯЕМ КОМАНДУ ЕСЛИ ПОЛЬЗОВАТЕЛЬ НЕ АДМИН
+            try:
+                bot.delete_message(user_id, message.message_id)
+            except:
+                pass
             return
             
         bot.send_message(
@@ -1522,32 +1517,6 @@ def handle_admin_callbacks(call):
                 chat_id=call.message.chat.id,
                 message_id=call.message.message_id,
                 reply_markup=InlineKeyboardMarkup().add(InlineKeyboardButton("🔙 Назад", callback_data="admin_back"))
-            )
-            
-        elif call.data == 'admin_help':
-            help_text = (
-                "🛠 АДМИН КОМАНДЫ:\n\n"
-                "👥 Пользователи:\n"
-                "/ban ID время причина - Забанить\n"
-                "/razban ID - Разбанить\n"
-                "/reply ID - Ответить\n\n"
-                "🎫 Промокоды:\n"
-                "/add_promo код сумма - Создать\n\n"
-                "📊 Статистика:\n"
-                "/adminlogs дни - Логи\n"
-                "/stats - Статистика\n\n"
-                "⚙️ Управление:\n"
-                "/add_admin ID - Добавить админа\n"
-                "/remove_admin ID - Удалить админа\n"
-                "/clear_db - Очистить БД (главный)\n\n"
-                "📢 Рассылка:\n"
-                "/broadcast - Сделать рассылку"
-            )
-            bot.edit_message_text(
-                help_text,
-                chat_id=call.message.chat.id,
-                message_id=call.message.message_id,
-                reply_markup=get_main_admin_keyboard()
             )
             
         elif call.data == 'admin_back':
@@ -1752,6 +1721,14 @@ def handle_admin_reply(message):
         admin_id = message.from_user.id
         target_id = user_reply_mode[admin_id]
         
+        # ЕСЛИ ЭТО КОМАНДА /stop - НЕ ОТПРАВЛЯЕМ ЕЕ ПОЛЬЗОВАТЕЛЮ
+        if message.text and message.text.startswith('/stop'):
+            user_reply_mode.pop(admin_id, None)
+            msg = bot.send_message(admin_id, f"✅ Режим ответа отключен для пользователя {target_id}")
+            delete_message_with_delay(admin_id, msg.message_id, 3)
+            delete_message_with_delay(admin_id, message.message_id, 3)
+            return
+            
         # Удаляем сообщение админа
         try:
             bot.delete_message(admin_id, message.message_id)
@@ -1800,7 +1777,11 @@ def ban_command(message):
     try:
         user_id = message.from_user.id
         if not is_admin(user_id):
-            bot.send_message(user_id, "❌ Нет прав доступа")
+            # УДАЛЯЕМ КОМАНДУ ЕСЛИ ПОЛЬЗОВАТЕЛЬ НЕ АДМИН
+            try:
+                bot.delete_message(user_id, message.message_id)
+            except:
+                pass
             return
             
         args = message.text.split()[1:]
@@ -1856,7 +1837,11 @@ def razban_command(message):
     try:
         user_id = message.from_user.id
         if not is_admin(user_id):
-            bot.send_message(user_id, "❌ Нет прав доступа")
+            # УДАЛЯЕМ КОМАНДУ ЕСЛИ ПОЛЬЗОВАТЕЛЬ НЕ АДМИН
+            try:
+                bot.delete_message(user_id, message.message_id)
+            except:
+                pass
             return
             
         args = message.text.split()[1:]
@@ -1887,7 +1872,11 @@ def add_promo_command(message):
     try:
         user_id = message.from_user.id
         if not is_admin(user_id):
-            bot.send_message(user_id, "❌ Нет прав доступа")
+            # УДАЛЯЕМ КОМАНДУ ЕСЛИ ПОЛЬЗОВАТЕЛЬ НЕ АДМИН
+            try:
+                bot.delete_message(user_id, message.message_id)
+            except:
+                pass
             return
             
         args = message.text.split()[1:]
@@ -1923,7 +1912,11 @@ def admin_logs_command(message):
     try:
         user_id = message.from_user.id
         if not is_admin(user_id):
-            bot.send_message(user_id, "❌ Нет прав доступа")
+            # УДАЛЯЕМ КОМАНДУ ЕСЛИ ПОЛЬЗОВАТЕЛЬ НЕ АДМИН
+            try:
+                bot.delete_message(user_id, message.message_id)
+            except:
+                pass
             return
             
         args = message.text.split()[1:]
@@ -1959,7 +1952,11 @@ def stats_command(message):
     try:
         user_id = message.from_user.id
         if not is_admin(user_id):
-            bot.send_message(user_id, "❌ Нет прав доступа")
+            # УДАЛЯЕМ КОМАНДУ ЕСЛИ ПОЛЬЗОВАТЕЛЬ НЕ АДМИН
+            try:
+                bot.delete_message(user_id, message.message_id)
+            except:
+                pass
             return
             
         user_count = get_user_count()
@@ -1980,7 +1977,11 @@ def add_admin_command(message):
     try:
         user_id = message.from_user.id
         if not is_admin(user_id):
-            bot.send_message(user_id, "❌ Нет прав доступа")
+            # УДАЛЯЕМ КОМАНДУ ЕСЛИ ПОЛЬЗОВАТЕЛЬ НЕ АДМИН
+            try:
+                bot.delete_message(user_id, message.message_id)
+            except:
+                pass
             return
             
         args = message.text.split()[1:]
@@ -2012,7 +2013,11 @@ def remove_admin_command(message):
     try:
         user_id = message.from_user.id
         if not is_admin(user_id):
-            bot.send_message(user_id, "❌ Нет прав доступа")
+            # УДАЛЯЕМ КОМАНДУ ЕСЛИ ПОЛЬЗОВАТЕЛЬ НЕ АДМИН
+            try:
+                bot.delete_message(user_id, message.message_id)
+            except:
+                pass
             return
             
         args = message.text.split()[1:]
@@ -2063,7 +2068,11 @@ def broadcast_command(message):
     try:
         user_id = message.from_user.id
         if not is_admin(user_id):
-            bot.send_message(user_id, "❌ Нет прав доступа")
+            # УДАЛЯЕМ КОМАНДУ ЕСЛИ ПОЛЬЗОВАТЕЛЬ НЕ АДМИН
+            try:
+                bot.delete_message(user_id, message.message_id)
+            except:
+                pass
             return
             
         user_broadcast_mode[user_id] = True
@@ -2078,7 +2087,11 @@ def reply_command(message):
     try:
         user_id = message.from_user.id
         if not is_admin(user_id):
-            bot.send_message(user_id, "❌ Нет прав доступа")
+            # УДАЛЯЕМ КОМАНДУ ЕСЛИ ПОЛЬЗОВАТЕЛЬ НЕ АДМИН
+            try:
+                bot.delete_message(user_id, message.message_id)
+            except:
+                pass
             return
             
         args = message.text.split()[1:]
@@ -2098,50 +2111,6 @@ def reply_command(message):
             delete_message_with_delay(user_id, message.message_id, 5)
     except Exception as e:
         logger.error(f"Error in /reply: {e}")
-
-@bot.message_handler(commands=['help'])
-def help_command(message):
-    try:
-        user_id = message.from_user.id
-        
-        if is_admin(user_id):
-            help_text = (
-                "🛠 АДМИН КОМАНДЫ:\n\n"
-                "👥 Управление пользователями:\n"
-                "/ban ID время причина - Забанить\n"
-                "/razban ID - Разбанить\n"
-                "/reply ID - Ответить пользователю\n\n"
-                "🎫 Промокоды:\n"
-                "/add_promo код сумма - Создать промокод\n\n"
-                "📊 Статистика:\n"
-                "/stats - Общая статистика\n"
-                "/adminlogs дни - Просмотр логов\n\n"
-                "⚙️ Управление админами:\n"
-                "/add_admin ID - Добавить админа\n"
-                "/remove_admin ID - Удалить админа\n"
-                "/clear_db - Очистить БД (главный)\n\n"
-                "📢 Рассылка:\n"
-                "/broadcast - Сделать рассылку\n\n"
-                "🎮 Игры:\n"
-                "/start - Главное меню\n"
-                "/balance - Баланс\n"
-                "/top - Топ игроков"
-            )
-        else:
-            help_text = (
-                "🎮 ДОСТУПНЫЕ КОМАНДЫ:\n\n"
-                "/start - Главное меню\n"
-                "/balance - Баланс\n"
-                "/top - Топ игроков\n"
-                "/promo КОД - Активировать промокод\n"
-                "/get_promo - Запросить промокод\n"
-                "/unban - Запрос разбана\n\n"
-                "🎰 Игры доступны через главное меню"
-            )
-            
-        bot.send_message(user_id, help_text)
-    except Exception as e:
-        logger.error(f"Error in /help: {e}")
 
 @bot.message_handler(commands=['stop'])
 def stop_command(message):
@@ -2300,7 +2269,7 @@ def handle_custom_bet(message):
                 
             user_custom_bet_mode.pop(user_id, None)
             
-            # Запускаем игру с кастомной ставкой
+            # Запускаем игру с кастомной ставкой - РЕДАКТИРУЕМ СУЩЕСТВУЮЩЕЕ СООБЩЕНИЕ
             final_result = spin_slots_animation(bot, user_id, message.message_id, bet_amount, user_id)
             all_lines = check_all_lines(final_result)
             total_win, winning_lines = calculate_win(all_lines, bet_amount)
@@ -2321,7 +2290,19 @@ def handle_custom_bet(message):
                 InlineKeyboardButton("🔄 Сыграть еще", callback_data="game_slots"),
                 InlineKeyboardButton("🔙 Назад", callback_data="user_back_main")
             )
-            bot.send_message(user_id, result_text, reply_markup=keyboard)
+            
+            # РЕДАКТИРУЕМ СУЩЕСТВУЮЩЕЕ СООБЩЕНИЕ ВМЕСТО СОЗДАНИЯ НОВОГО
+            try:
+                bot.edit_message_text(
+                    result_text,
+                    chat_id=user_id,
+                    message_id=message.message_id,
+                    reply_markup=keyboard
+                )
+            except:
+                # Если не удалось отредактировать, отправляем новое
+                bot.send_message(user_id, result_text, reply_markup=keyboard)
+                
             log_user_action(message.from_user, f"сыграл в слоты: ставка {bet_amount}, выигрыш {total_win}")
             
         except ValueError:
@@ -2344,13 +2325,26 @@ def handle_unknown_commands(message):
             user_id in user_add_admin_mode or user_id in user_remove_admin_mode):
             return
             
+        # ЕСЛИ ЭТО КОМАНДА (начинается с /) - удаляем и показываем сообщение
         if message.text and message.text.startswith('/'):
+            # УДАЛЯЕМ КОМАНДУ
+            try:
+                bot.delete_message(user_id, message.message_id)
+            except:
+                pass
+                
             msg = bot.send_message(user_id, 
                            "❌ Неизвестная команда\n"
-                           "Используйте /help для просмотра доступных команд")
+                           "Используйте меню для навигации")
             delete_message_with_delay(user_id, msg.message_id, 5)
-            delete_message_with_delay(user_id, message.message_id, 5)
             log_user_action(message.from_user, f"ввел неизвестную команду: {message.text}")
+        else:
+            # ЕСЛИ ЭТО ПРОСТО ТЕКСТ И РЕЖИМ ПОДДЕРЖКИ НЕ ВКЛЮЧЕН
+            if user_id not in user_support_mode:
+                msg = bot.send_message(user_id, 
+                               "❌ Для обращения в поддержку сначала необходимо включить режим поддержки через меню")
+                delete_message_with_delay(user_id, msg.message_id, 5)
+                delete_message_with_delay(user_id, message.message_id, 5)
                 
     except Exception as e:
         logger.error(f"Error in unknown command handler: {e}")
