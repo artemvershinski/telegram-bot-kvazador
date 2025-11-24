@@ -70,7 +70,7 @@ class LiarsBarGame:
         
         self.theme = random.choice(['queen', 'king', 'ace'])
         
-        # Раздача карт
+        # Раздача карточек
         cards_per_player = 5
         for i, player_id in enumerate(self.players):
             start_index = i * cards_per_player
