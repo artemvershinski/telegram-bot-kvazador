@@ -335,15 +335,27 @@ class WerbHubBot:
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
 
-async def main():
+def main():
+    """Главная функция для запуска бота"""
     bot = WerbHubBot()
-    await bot.init()
     
-    application = Application.builder().token(BOT_TOKEN).build()
-    bot.setup_handlers(application)
+    # Создаем новое событийное loop
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
     
-    logger.info("Бот запущен на Render!")
-    await application.run_polling()
+    try:
+        # Инициализируем и запускаем бота
+        loop.run_until_complete(bot.init())
+        
+        application = Application.builder().token(BOT_TOKEN).build()
+        bot.setup_handlers(application)
+        
+        logger.info("Бот запущен на Render!")
+        application.run_polling()
+    except Exception as e:
+        logger.error(f"Ошибка при запуске бота: {e}")
+    finally:
+        loop.close()
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()
