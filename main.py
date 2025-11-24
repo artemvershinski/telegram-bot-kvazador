@@ -56,11 +56,11 @@ class Database:
             )
         ''')
 
-    async def create_game(self, game_id, chat_id, creator_id, creator_username):
+    async def create_game(self, game_id, creator_id, creator_username):
         await self.pool.execute('''
             INSERT INTO games (game_id, chat_id, players, player_usernames, game_state, theme, table_cards, current_player_index, player_hands, player_revolvers, deck)
             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
-        ''', game_id, chat_id, json.dumps([creator_id]), json.dumps([creator_username]), 'waiting', None, json.dumps([]), 0, json.dumps({}), json.dumps({}), json.dumps([]))
+        ''', game_id, creator_id, json.dumps([creator_id]), json.dumps([creator_username]), 'waiting', None, json.dumps([]), 0, json.dumps({}), json.dumps({}), json.dumps([]))
 
     async def get_game(self, game_id):
         row = await self.pool.fetchrow('SELECT * FROM games WHERE game_id = $1', game_id)
@@ -98,9 +98,9 @@ class Database:
 
 # ========== GAME КЛАСС ==========
 class LiarsBarGame:
-    def __init__(self, game_id: str, chat_id: int):
+    def __init__(self, game_id: str, creator_id: int):
         self.game_id = game_id
-        self.chat_id = chat_id
+        self.creator_id = creator_id
         self.players = []
         self.player_usernames = []
         self.game_state = "waiting"
@@ -221,18 +221,14 @@ class LiarsBarGame:
             'had_theme_cards': has_theme_cards
         }
     
-    def check_player_has_theme_cards(self, player_id: int):
-        hand = self.player_hands.get(player_id, [])
-        return any(card in [self.theme, 'joker'] for card in hand)
-    
     def fire_revolver(self, player_id: int):
         revolver = self.player_revolvers[player_id]
         
         if revolver['current_position'] == revolver['chamber']:
+            # Находим индекс перед удалением
+            index = self.players.index(player_id)
             self.players.remove(player_id)
-            index = self.players.index(player_id) if player_id in self.players else -1
-            if index != -1:
-                self.player_usernames.pop(index)
+            self.player_usernames.pop(index)
             return False
         else:
             revolver['current_position'] = (revolver['current_position'] + 1) % 6
@@ -244,7 +240,7 @@ class LiarsBarGame:
     def to_dict(self):
         return {
             'game_id': self.game_id,
-            'chat_id': self.chat_id,
+            'chat_id': self.creator_id,
             'players': self.players,
             'player_usernames': self.player_usernames,
             'game_state': self.game_state,
@@ -331,157 +327,185 @@ class WerbHubBot:
             await query.edit_message_text("Ошибка. Попробуйте снова.")
 
     async def create_room(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        query = update.callback_query
-        user_id = query.from_user.id
-        username = query.from_user.username or query.from_user.first_name
-        
-        room_id = ''.join(random.choices(string.digits, k=6))
-        
-        game = LiarsBarGame(room_id, user_id)
-        game.add_player(user_id, f"@{username}")
-        self.active_games[room_id] = game
-        
-        await self.db.create_game(room_id, user_id, f"@{username}")
-        
-        keyboard = [
-            [InlineKeyboardButton("Присоединиться", callback_data=f"join_room_{room_id}")],
-            [InlineKeyboardButton("Начать игру", callback_data=f"start_room_{room_id}")],
-            [InlineKeyboardButton("Выйти", callback_data=f"leave_room_{room_id}")]
-        ]
-        
-        players_text = "\n".join([f"• {username}" for username in game.player_usernames])
-        
-        await query.edit_message_text(
-            f"Комната создана\n\n"
-            f"ID комнаты: {room_id}\n"
-            f"Игроков: {len(game.players)}/4\n\n"
-            f"Игроки:\n{players_text}\n\n"
-            f"Отправь этот ID друзьям:",
-            reply_markup=InlineKeyboardMarkup(keyboard)
-        )
+        try:
+            query = update.callback_query
+            user_id = query.from_user.id
+            username = query.from_user.username or query.from_user.first_name
+            
+            room_id = ''.join(random.choices(string.digits, k=6))
+            
+            game = LiarsBarGame(room_id, user_id)
+            game.add_player(user_id, f"@{username}")
+            self.active_games[room_id] = game
+            
+            await self.db.create_game(room_id, user_id, f"@{username}")
+            
+            players_text = "\n".join([f"• {username}" for username in game.player_usernames])
+            
+            keyboard = [
+                [InlineKeyboardButton("Присоединиться", callback_data=f"join_room_{room_id}")],
+                [InlineKeyboardButton("Начать игру", callback_data=f"start_room_{room_id}")],
+                [InlineKeyboardButton("Выйти", callback_data=f"leave_room_{room_id}")]
+            ]
+            
+            await query.edit_message_text(
+                f"Комната создана\n\n"
+                f"ID комнаты: {room_id}\n"
+                f"Игроков: {len(game.players)}/4\n\n"
+                f"Игроки:\n{players_text}\n\n"
+                f"Отправь этот ID друзьям:",
+                reply_markup=InlineKeyboardMarkup(keyboard)
+            )
+        except Exception as e:
+            logger.error(f"Ошибка при создании комнаты: {e}")
+            await update.callback_query.edit_message_text("Ошибка при создании комнаты. Попробуйте снова.")
 
     async def join_room(self, update: Update, context: ContextTypes.DEFAULT_TYPE, room_id: str):
-        query = update.callback_query
-        user_id = query.from_user.id
-        username = query.from_user.username or query.from_user.first_name
-        
-        game = self.active_games.get(room_id)
-        if not game:
-            game_data = await self.db.get_game(room_id)
-            if game_data:
-                game = LiarsBarGame.from_dict(game_data)
-                self.active_games[room_id] = game
-            else:
-                await query.edit_message_text("Комната не найдена")
-                return
-        
-        if user_id in game.players:
-            await query.answer("Вы уже в этой комнате")
-            return
+        try:
+            query = update.callback_query
+            user_id = query.from_user.id
+            username = query.from_user.username or query.from_user.first_name
             
-        if len(game.players) >= 4:
-            await query.edit_message_text("Комната заполнена")
-            return
-        
-        game.add_player(user_id, f"@{username}")
-        await self.db.update_game(room_id, game.to_dict())
-        
-        # Обновляем сообщение у всех игроков
-        await self.update_room_for_all_players(game, context)
-        
-        await query.answer("Вы присоединились к комнате")
+            game = self.active_games.get(room_id)
+            if not game:
+                game_data = await self.db.get_game(room_id)
+                if game_data:
+                    game = LiarsBarGame.from_dict(game_data)
+                    self.active_games[room_id] = game
+                else:
+                    await query.answer("Комната не найдена")
+                    return
+            
+            if user_id in game.players:
+                await query.answer("Вы уже в этой комнате")
+                return
+                
+            if len(game.players) >= 4:
+                await query.answer("Комната заполнена")
+                return
+            
+            game.add_player(user_id, f"@{username}")
+            await self.db.update_game(room_id, game.to_dict())
+            
+            # УВЕДОМЛЕНИЕ ДЛЯ ВСЕХ ИГРОКОВ
+            await self.notify_players(game, context, f"@{username} присоединился к комнате")
+            
+            # Обновляем сообщение у всех игроков
+            await self.update_room_for_all_players(game, context)
+            
+            await query.answer("Вы присоединились к комнате")
+            
+        except Exception as e:
+            logger.error(f"Ошибка при присоединении к комнате: {e}")
+            await update.callback_query.answer("Ошибка при присоединении")
 
     async def leave_room(self, update: Update, context: ContextTypes.DEFAULT_TYPE, room_id: str):
-        query = update.callback_query
-        user_id = query.from_user.id
-        
-        game = self.active_games.get(room_id)
-        if not game:
-            await query.answer("Комната не найдена")
-            return
-        
-        if user_id not in game.players:
-            await query.answer("Вы не в этой комнате")
-            return
-        
-        game.remove_player(user_id)
-        await self.db.update_game(room_id, game.to_dict())
-        
-        # Если комната пустая, удаляем ее
-        if len(game.players) == 0:
-            del self.active_games[room_id]
-            await query.edit_message_text("Вы вышли из комнаты. Комната удалена.")
-        else:
-            # Обновляем сообщение у оставшихся игроков
-            await self.update_room_for_all_players(game, context)
-            await query.edit_message_text("Вы вышли из комнаты")
+        try:
+            query = update.callback_query
+            user_id = query.from_user.id
+            
+            game = self.active_games.get(room_id)
+            if not game:
+                await query.answer("Комната не найдена")
+                return
+            
+            if user_id not in game.players:
+                await query.answer("Вы не в этой комнате")
+                return
+            
+            username = next((name for i, pid in enumerate(game.players) if pid == user_id), "Игрок")
+            game.remove_player(user_id)
+            await self.db.update_game(room_id, game.to_dict())
+            
+            # УВЕДОМЛЕНИЕ ДЛЯ ВСЕХ ИГРОКОВ
+            await self.notify_players(game, context, f"{username} вышел из комнаты")
+            
+            # Если комната пустая, удаляем ее
+            if len(game.players) == 0:
+                del self.active_games[room_id]
+                await query.edit_message_text("Вы вышли из комнаты. Комната удалена.")
+            else:
+                # Обновляем сообщение у оставшихся игроков
+                await self.update_room_for_all_players(game, context)
+                await query.edit_message_text("Вы вышли из комнаты")
+                
+        except Exception as e:
+            logger.error(f"Ошибка при выходе из комнаты: {e}")
+            await update.callback_query.answer("Ошибка при выходе")
 
     async def update_room_for_all_players(self, game: LiarsBarGame, context: ContextTypes.DEFAULT_TYPE):
         """Обновляет сообщение комнаты у всех игроков"""
-        players_text = "\n".join([f"• {username}" for username in game.player_usernames])
-        
-        for player_id in game.players:
-            try:
-                keyboard = []
-                if player_id == game.players[0]:  # создатель
-                    keyboard.append([InlineKeyboardButton("Начать игру", callback_data=f"start_room_{game.game_id}")])
-                
-                keyboard.extend([
-                    [InlineKeyboardButton("Присоединиться", callback_data=f"join_room_{game.game_id}")],
-                    [InlineKeyboardButton("Выйти", callback_data=f"leave_room_{game.game_id}")]
-                ])
-                
-                await context.bot.send_message(
-                    chat_id=player_id,
-                    text=f"Комната {game.game_id}\n\n"
-                         f"Игроков: {len(game.players)}/4\n\n"
-                         f"Игроки:\n{players_text}\n\n"
-                         f"Ожидаем начала игры...",
-                    reply_markup=InlineKeyboardMarkup(keyboard)
-                )
-            except Exception as e:
-                logger.error(f"Не удалось обновить комнату для игрока {player_id}: {e}")
-
-    async def start_room(self, update: Update, context: ContextTypes.DEFAULT_TYPE, room_id: str):
-        query = update.callback_query
-        user_id = query.from_user.id
-        
-        game = self.active_games.get(room_id)
-        if not game:
-            await query.answer("Комната не найдена")
-            return
-        
-        if game.players[0] != user_id:
-            await query.answer("Только создатель комнаты может начать игру")
-            return
-        
-        if len(game.players) < 4:
-            await query.answer("Нужно 4 игрока для начала игры")
-            return
-        
-        success, message = game.start_game()
-        if success:
-            await self.db.update_game(room_id, game.to_dict())
+        try:
+            players_text = "\n".join([f"• {username}" for username in game.player_usernames])
             
-            theme_names = {'queen': 'Дамы', 'king': 'Короли', 'ace': 'Тузы'}
             for player_id in game.players:
                 try:
-                    hand = game.player_hands.get(player_id, [])
-                    hand_text = ", ".join(hand)
+                    keyboard = []
+                    if player_id == game.players[0]:  # создатель
+                        keyboard.append([InlineKeyboardButton("Начать игру", callback_data=f"start_room_{game.game_id}")])
+                    
+                    keyboard.extend([
+                        [InlineKeyboardButton("Присоединиться", callback_data=f"join_room_{game.game_id}")],
+                        [InlineKeyboardButton("Выйти", callback_data=f"leave_room_{game.game_id}")]
+                    ])
                     
                     await context.bot.send_message(
                         chat_id=player_id,
-                        text=f"Игра началась\n\n"
-                             f"Тема раунда: {theme_names.get(game.theme)}\n"
-                             f"Твои карты: {hand_text}\n"
-                             f"Револьвер заряжен"
+                        text=f"Комната {game.game_id}\n\n"
+                             f"Игроков: {len(game.players)}/4\n\n"
+                             f"Игроки:\n{players_text}\n\n"
+                             f"Ожидаем начала игры...",
+                        reply_markup=InlineKeyboardMarkup(keyboard)
                     )
                 except Exception as e:
-                    logger.error(f"Не удалось уведомить игрока {player_id}: {e}")
+                    logger.error(f"Не удалось обновить комнату для игрока {player_id}: {e}")
+        except Exception as e:
+            logger.error(f"Ошибка в update_room_for_all_players: {e}")
+
+    async def start_room(self, update: Update, context: ContextTypes.DEFAULT_TYPE, room_id: str):
+        try:
+            query = update.callback_query
+            user_id = query.from_user.id
             
-            await self.show_game_state(game, context)
-        else:
-            await query.answer(message)
+            game = self.active_games.get(room_id)
+            if not game:
+                await query.answer("Комната не найдена")
+                return
+            
+            if game.players[0] != user_id:
+                await query.answer("Только создатель комнаты может начать игру")
+                return
+            
+            if len(game.players) < 4:
+                await query.answer("Нужно 4 игрока для начала игры")
+                return
+            
+            success, message = game.start_game()
+            if success:
+                await self.db.update_game(room_id, game.to_dict())
+                
+                theme_names = {'queen': 'Дамы', 'king': 'Короли', 'ace': 'Тузы'}
+                for player_id in game.players:
+                    try:
+                        hand = game.player_hands.get(player_id, [])
+                        hand_text = ", ".join(hand)
+                        
+                        await context.bot.send_message(
+                            chat_id=player_id,
+                            text=f"Игра началась\n\n"
+                                 f"Тема раунда: {theme_names.get(game.theme)}\n"
+                                 f"Твои карты: {hand_text}\n"
+                                 f"Револьвер заряжен"
+                        )
+                    except Exception as e:
+                        logger.error(f"Не удалось уведомить игрока {player_id}: {e}")
+                
+                await self.show_game_state(game, context)
+            else:
+                await query.answer(message)
+        except Exception as e:
+            logger.error(f"Ошибка при старте игры: {e}")
+            await update.callback_query.answer("Ошибка при старте игры")
 
     async def show_rules(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         query = update.callback_query
@@ -520,58 +544,66 @@ class WerbHubBot:
         )
 
     async def play_cards_handler(self, update: Update, context: ContextTypes.DEFAULT_TYPE, card_count: int):
-        query = update.callback_query
-        user_id = query.from_user.id
-        
-        game = await self.find_user_game(user_id)
-        if not game:
-            await query.answer("Вы не в активной игре")
-            return
-        
-        success, message = game.play_cards(user_id, card_count)
-        if success:
-            await self.db.update_game(game.game_id, game.to_dict())
-            await self.notify_players(game, context, f"Игрок положил {card_count} карт на стол")
+        try:
+            query = update.callback_query
+            user_id = query.from_user.id
             
-            if "ПОБЕДА" in message:
-                await self.notify_players(game, context, f"Игрок победил!")
-                del self.active_games[game.game_id]
+            game = await self.find_user_game(user_id)
+            if not game:
+                await query.answer("Вы не в активной игре")
+                return
+            
+            success, message = game.play_cards(user_id, card_count)
+            if success:
+                await self.db.update_game(game.game_id, game.to_dict())
+                await self.notify_players(game, context, f"Игрок положил {card_count} карт на стол")
+                
+                if "ПОБЕДА" in message:
+                    await self.notify_players(game, context, f"Игрок победил!")
+                    del self.active_games[game.game_id]
+                else:
+                    await self.show_game_state(game, context)
             else:
-                await self.show_game_state(game, context)
-        else:
-            await query.answer(message)
+                await query.answer(message)
+        except Exception as e:
+            logger.error(f"Ошибка в play_cards_handler: {e}")
+            await update.callback_query.answer("Ошибка при ходе")
 
     async def challenge_handler(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        query = update.callback_query
-        user_id = query.from_user.id
-        
-        game = await self.find_user_game(user_id)
-        if not game:
-            await query.answer("Вы не в активной игре")
-            return
-        
-        success, result = game.challenge_previous_player(user_id)
-        if success:
-            shooter_id = result['shooter']
-            survived = result['survived']
+        try:
+            query = update.callback_query
+            user_id = query.from_user.id
             
-            shooter_username = next((username for i, player_id in enumerate(game.players) if player_id == shooter_id), "Игрок")
+            game = await self.find_user_game(user_id)
+            if not game:
+                await query.answer("Вы не в активной игре")
+                return
             
-            if survived:
-                message = f"{shooter_username} выстрелил и выжил"
+            success, result = game.challenge_previous_player(user_id)
+            if success:
+                shooter_id = result['shooter']
+                survived = result['survived']
+                
+                shooter_username = next((username for i, player_id in enumerate(game.players) if player_id == shooter_id), "Игрок")
+                
+                if survived:
+                    message = f"{shooter_username} выстрелил и выжил"
+                else:
+                    message = f"{shooter_username} выстрелил и выбыл из игры"
+                
+                await self.notify_players(game, context, message)
+                await self.db.update_game(game.game_id, game.to_dict())
+                
+                if len(game.players) > 1:
+                    await self.show_game_state(game, context)
+                else:
+                    await self.notify_players(game, context, f"{game.player_usernames[0]} победил")
+                    del self.active_games[game.game_id]
             else:
-                message = f"{shooter_username} выстрелил и выбыл из игры"
-            
-            await self.notify_players(game, context, message)
-            await self.db.update_game(game.game_id, game.to_dict())
-            
-            if len(game.players) > 1:
-                await self.show_game_state(game, context)
-            else:
-                await self.notify_players(game, context, f"{game.player_usernames[0]} победил")
-                del self.active_games[game.game_id]
-        else:
-            await query.answer(result)
+                await query.answer(result)
+        except Exception as e:
+            logger.error(f"Ошибка в challenge_handler: {e}")
+            await update.callback_query.answer("Ошибка при проверке")
 
     async def find_user_game(self, user_id: int):
         for game in self.active_games.values():
@@ -580,6 +612,7 @@ class WerbHubBot:
         return None
 
     async def notify_players(self, game: LiarsBarGame, context: ContextTypes.DEFAULT_TYPE, message: str):
+        """Отправляет уведомление всем игрокам в комнате"""
         for player_id in game.players:
             try:
                 await context.bot.send_message(chat_id=player_id, text=message)
@@ -587,41 +620,44 @@ class WerbHubBot:
                 logger.error(f"Не удалось уведомить игрока {player_id}: {e}")
 
     async def show_game_state(self, game: LiarsBarGame, context: ContextTypes.DEFAULT_TYPE):
-        current_player = game.get_current_player()
-        theme_names = {'queen': 'Дамы', 'king': 'Короли', 'ace': 'Тузы'}
-        
-        for player_id in game.players:
-            try:
-                hand = game.player_hands.get(player_id, [])
-                hand_text = ", ".join(hand)
-                
-                message = (
-                    f"Тема: {theme_names.get(game.theme)}\n"
-                    f"Твои карты: {hand_text}\n"
-                    f"Карт на столе: {len(game.table_cards)}\n"
-                    f"Игроков осталось: {len(game.players)}\n\n"
-                )
-                
-                if player_id == current_player:
-                    message += "Сейчас твой ход"
-                    keyboard = [
-                        [InlineKeyboardButton("Положить 1 карту", callback_data="play_cards_1")],
-                        [InlineKeyboardButton("Положить 2 карты", callback_data="play_cards_2")],
-                        [InlineKeyboardButton("Положить 3 карты", callback_data="play_cards_3")],
-                        [InlineKeyboardButton("Проверить предыдущего", callback_data="challenge")]
-                    ]
-                else:
-                    current_username = next((username for i, pid in enumerate(game.players) if pid == current_player), "Игрок")
-                    message += f"Сейчас ходит {current_username}"
-                    keyboard = [[InlineKeyboardButton("Проверить предыдущего", callback_data="challenge")]]
-                
-                await context.bot.send_message(
-                    chat_id=player_id,
-                    text=message,
-                    reply_markup=InlineKeyboardMarkup(keyboard)
-                )
-            except Exception as e:
-                logger.error(f"Не удалось отправить состояние игры {player_id}: {e}")
+        try:
+            current_player = game.get_current_player()
+            theme_names = {'queen': 'Дамы', 'king': 'Короли', 'ace': 'Тузы'}
+            
+            for player_id in game.players:
+                try:
+                    hand = game.player_hands.get(player_id, [])
+                    hand_text = ", ".join(hand)
+                    
+                    message = (
+                        f"Тема: {theme_names.get(game.theme)}\n"
+                        f"Твои карты: {hand_text}\n"
+                        f"Карт на столе: {len(game.table_cards)}\n"
+                        f"Игроков осталось: {len(game.players)}\n\n"
+                    )
+                    
+                    if player_id == current_player:
+                        message += "Сейчас твой ход"
+                        keyboard = [
+                            [InlineKeyboardButton("Положить 1 карту", callback_data="play_cards_1")],
+                            [InlineKeyboardButton("Положить 2 карты", callback_data="play_cards_2")],
+                            [InlineKeyboardButton("Положить 3 карты", callback_data="play_cards_3")],
+                            [InlineKeyboardButton("Проверить предыдущего", callback_data="challenge")]
+                        ]
+                    else:
+                        current_username = next((username for i, pid in enumerate(game.players) if pid == current_player), "Игрок")
+                        message += f"Сейчас ходит {current_username}"
+                        keyboard = [[InlineKeyboardButton("Проверить предыдущего", callback_data="challenge")]]
+                    
+                    await context.bot.send_message(
+                        chat_id=player_id,
+                        text=message,
+                        reply_markup=InlineKeyboardMarkup(keyboard)
+                    )
+                except Exception as e:
+                    logger.error(f"Не удалось отправить состояние игры {player_id}: {e}")
+        except Exception as e:
+            logger.error(f"Ошибка в show_game_state: {e}")
 
     async def join_game_prompt(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         query = update.callback_query
