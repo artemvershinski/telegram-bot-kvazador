@@ -1,12 +1,10 @@
 services:
-  - type: web
-    name: werb-hub-bot
+  - type: worker
+    name: telegram-bot-kvazador
     env: python
     plan: free
     buildCommand: pip install -r requirements.txt
     startCommand: python main.py
     envVars:
       - key: BOT_TOKEN
-        sync: false
-      - key: DATABASE_URL
         sync: false
