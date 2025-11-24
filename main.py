@@ -3,6 +3,9 @@ import os
 import random
 import string
 import asyncio
+from datetime import datetime, time
+import threading
+import time as time_module
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
 
@@ -17,6 +20,7 @@ if not BOT_TOKEN:
     raise ValueError("BOT_TOKEN не установлен")
 
 active_games = {}
+game_cleanup_scheduled = False
 
 class LiarsBarGame:
     def __init__(self, game_id: str, creator_id: int):
@@ -31,6 +35,7 @@ class LiarsBarGame:
         self.player_revolvers = {}
         self.deck = []
         self.last_move_player_id = None
+        self.last_activity = datetime.now()
         
     def create_deck(self):
         self.deck = []
@@ -44,6 +49,7 @@ class LiarsBarGame:
         if player_id not in self.players:
             self.players.append(player_id)
             self.player_usernames.append(username)
+            self.last_activity = datetime.now()
             return True
         return False
     
@@ -52,6 +58,7 @@ class LiarsBarGame:
             index = self.players.index(player_id)
             self.players.remove(player_id)
             self.player_usernames.pop(index)
+            self.last_activity = datetime.now()
             return True
         return False
     
@@ -70,13 +77,14 @@ class LiarsBarGame:
         
         self.theme = random.choice(['queen', 'king', 'ace'])
         
-        # Раздача карточек
+        # Раздача карт
         cards_per_player = 5
         for i, player_id in enumerate(self.players):
             start_index = i * cards_per_player
             end_index = start_index + cards_per_player
             self.player_hands[player_id] = self.deck[start_index:end_index]
         
+        self.last_activity = datetime.now()
         return True, "Игра началась"
     
     def play_cards(self, player_id: int, card_count: int, claimed_cards: list):
@@ -104,6 +112,7 @@ class LiarsBarGame:
         })
         
         self.last_move_player_id = player_id
+        self.last_activity = datetime.now()
         
         if len(hand) == 0:
             return True, "ПОБЕДА! Ты сбросил все карты"
@@ -165,6 +174,7 @@ class LiarsBarGame:
             self.player_hands[player_id] = self.deck[start_index:end_index]
         
         self.table_cards = []
+        self.last_activity = datetime.now()
         
         return True, {
             'challenger_id': challenger_id,
@@ -183,9 +193,11 @@ class LiarsBarGame:
             index = self.players.index(player_id)
             self.players.remove(player_id)
             self.player_usernames.pop(index)
+            self.last_activity = datetime.now()
             return False
         else:
             revolver['current_position'] = (revolver['current_position'] + 1) % 6
+            self.last_activity = datetime.now()
             return True
     
     def get_current_player(self):
@@ -209,7 +221,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
 
-# ДОБАВЛЯЕМ ПРОПУЩЕННУЮ ФУНКЦИЮ
 async def join_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
         await update.message.reply_text("Укажи ID комнаты: /join 123456")
@@ -228,6 +239,8 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     data = query.data
     user_id = query.from_user.id
+    
+    logger.info(f"Callback received: {data} from user {user_id}")
     
     try:
         if data == "create_room":
@@ -452,7 +465,9 @@ async def finalize_move(update: Update, context: ContextTypes.DEFAULT_TYPE, card
     if success:
         if "ПОБЕДА" in message:
             await notify_players(game, context, f"🎉 {game.get_player_username(user_id)} ПОБЕДИЛ!")
-            del active_games[game.game_id]
+            # Автоматически удаляем комнату после победы
+            if game.game_id in active_games:
+                del active_games[game.game_id]
             return
         
         # Уведомляем всех о ходе
@@ -539,7 +554,9 @@ async def challenge_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             winner = game.get_player_username(game.players[0])
             await notify_players(game, context, f"🎉 ПОБЕДИТЕЛЬ: {winner}!")
-            del active_games[game.game_id]
+            # Автоматически удаляем комнату после победы
+            if game.game_id in active_games:
+                del active_games[game.game_id]
 
 async def show_game_state(game, context):
     current_player = game.get_current_player()
@@ -596,6 +613,7 @@ async def leave_room(update: Update, context: ContextTypes.DEFAULT_TYPE, room_id
     game.remove_player(user_id)
     
     if len(game.players) == 0:
+        # Автоматически удаляем комнату, когда все вышли
         del active_games[room_id]
         await query.edit_message_text("Вы вышли. Комната удалена.")
     else:
@@ -652,39 +670,79 @@ async def back_to_main(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ]
     await query.edit_message_text("Главное меню:", reply_markup=InlineKeyboardMarkup(keyboard))
 
+def cleanup_inactive_games():
+    """Очистка неактивных игр (старше 2 часов)"""
+    current_time = datetime.now()
+    rooms_to_delete = []
+    
+    for room_id, game in active_games.items():
+        time_diff = current_time - game.last_activity
+        if time_diff.total_seconds() > 7200:  # 2 часа
+            rooms_to_delete.append(room_id)
+    
+    for room_id in rooms_to_delete:
+        del active_games[room_id]
+        logger.info(f"Удалена неактивная комната {room_id}")
+
+async def send_cleanup_warning(context: ContextTypes.DEFAULT_TYPE):
+    """Отправка предупреждения о скорой очистке"""
+    current_time = datetime.now().time()
+    warning_time = time(20, 45)  # 20:45 UTC
+    
+    if current_time.hour == warning_time.hour and current_time.minute == warning_time.minute:
+        if active_games:
+            warning_message = "⚠️ ВНИМАНИЕ: В 21:00 UTC все активные игры будут автоматически завершены для технического обслуживания!"
+            for game in active_games.values():
+                for player_id in game.players:
+                    try:
+                        await context.bot.send_message(player_id, warning_message)
+                    except:
+                        pass
+            logger.info("Отправлены предупреждения о скорой очистке")
+
+async def perform_daily_cleanup(context: ContextTypes.DEFAULT_TYPE):
+    """Ежедневная очистка в 21:00 UTC"""
+    current_time = datetime.now().time()
+    cleanup_time = time(21, 0)  # 21:00 UTC
+    
+    if current_time.hour == cleanup_time.hour and current_time.minute == cleanup_time.minute:
+        if active_games:
+            cleanup_message = "🔄 Техническое обслуживание: все активные игры завершены. Создавайте новые комнаты!"
+            for game in list(active_games.values()):
+                for player_id in game.players:
+                    try:
+                        await context.bot.send_message(player_id, cleanup_message)
+                    except:
+                        pass
+            active_games.clear()
+            logger.info("Выполнена ежедневная очистка всех комнат")
+
+def schedule_cleanup_tasks(application):
+    """Планирование задач очистки"""
+    async def cleanup_callback(context: ContextTypes.DEFAULT_TYPE):
+        cleanup_inactive_games()
+        await send_cleanup_warning(context)
+        await perform_daily_cleanup(context)
+    
+    # Запускаем проверку каждую минуту
+    job_queue = application.job_queue
+    if job_queue:
+        job_queue.run_repeating(cleanup_callback, interval=60, first=10)  # Каждую минуту
+
 def main():
     application = Application.builder().token(BOT_TOKEN).build()
     
     application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("join", join_command))  # Теперь функция определена
+    application.add_handler(CommandHandler("join", join_command))
     application.add_handler(CallbackQueryHandler(handle_callback))
+    
+    # Планируем задачи очистки
+    schedule_cleanup_tasks(application)
     
     logger.info("Бот запущен")
     
-    if os.getenv('RENDER'):
-        render_external_url = os.getenv('RENDER_EXTERNAL_URL')
-        if not render_external_url:
-            service_name = os.getenv('RENDER_SERVICE_NAME')
-            if service_name:
-                render_external_url = f"https://{service_name}.onrender.com"
-            else:
-                logger.error("Не удалось определить внешний URL для вебхуков")
-                return
-        
-        webhook_url = f"{render_external_url}/{BOT_TOKEN}"
-        port = int(os.environ.get('PORT', 10000))
-        
-        logger.info(f"Запуск с вебхуками на {webhook_url}")
-        
-        application.run_webhook(
-            listen="0.0.0.0",
-            port=port,
-            url_path=BOT_TOKEN,
-            webhook_url=webhook_url
-        )
-    else:
-        logger.info("Запуск с поллингом (локальная разработка)")
-        application.run_polling()
+    # Всегда используем поллинг для простоты
+    application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":
     main()
