@@ -209,6 +209,19 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
 
+# ДОБАВЛЯЕМ ПРОПУЩЕННУЮ ФУНКЦИЮ
+async def join_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.args:
+        await update.message.reply_text("Укажи ID комнаты: /join 123456")
+        return
+    
+    room_id = context.args[0]
+    if room_id in active_games:
+        keyboard = [[InlineKeyboardButton("Присоединиться", callback_data=f"join_room_{room_id}")]]
+        await update.message.reply_text(f"Комната {room_id} найдена:", reply_markup=InlineKeyboardMarkup(keyboard))
+    else:
+        await update.message.reply_text("Комната не найдена")
+
 async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -236,15 +249,132 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif data.startswith("claim_cards_"):
             card_data = data.split("_")[2]
             await process_card_claim(update, context, card_data)
+        elif data.startswith("final_move_"):
+            parts = data.split("_")
+            card_count = int(parts[2])
+            card_type = parts[3]
+            await finalize_move(update, context, card_count, card_type)
         elif data == "challenge":
             await challenge_handler(update, context)
         elif data.startswith("leave_room_"):
             room_id = data.split("_")[2]
             await leave_room(update, context, room_id)
+        elif data == "back_to_game":
+            game = await find_user_game(user_id)
+            if game:
+                await show_game_state(game, context)
             
     except Exception as e:
         logger.error(f"Ошибка в callback: {e}")
         await query.answer("Ошибка")
+
+async def create_room(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    user_id = query.from_user.id
+    username = query.from_user.username or query.from_user.first_name
+    
+    room_id = ''.join(random.choices(string.digits, k=6))
+    game = LiarsBarGame(room_id, user_id)
+    game.player_usernames.append(f"@{username}")
+    active_games[room_id] = game
+    
+    players_text = "\n".join([f"• {name}" for name in game.player_usernames])
+    
+    keyboard = [
+        [InlineKeyboardButton("Присоединиться", callback_data=f"join_room_{room_id}")],
+        [InlineKeyboardButton("Начать игру", callback_data=f"start_room_{room_id}")],
+        [InlineKeyboardButton("Выйти", callback_data=f"leave_room_{room_id}")]
+    ]
+    
+    await query.edit_message_text(
+        f"Комната создана!\n\nID: {room_id}\nИгроков: 1/4\n\nИгроки:\n{players_text}\n\nОтправь ID друзьям:",
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
+
+async def join_room(update: Update, context: ContextTypes.DEFAULT_TYPE, room_id: str):
+    query = update.callback_query
+    user_id = query.from_user.id
+    username = query.from_user.username or query.from_user.first_name
+    
+    if room_id not in active_games:
+        await query.answer("Комната не найдена")
+        return
+    
+    game = active_games[room_id]
+    
+    if user_id in game.players:
+        await query.answer("Вы уже в комнате")
+        return
+        
+    if len(game.players) >= 4:
+        await query.answer("Комната заполнена")
+        return
+    
+    game.add_player(user_id, f"@{username}")
+    
+    # Уведомляем всех
+    for player_id in game.players:
+        if player_id != user_id:
+            try:
+                await context.bot.send_message(player_id, f"@{username} присоединился к комнате")
+            except:
+                pass
+    
+    players_text = "\n".join([f"• {name}" for name in game.player_usernames])
+    
+    keyboard = []
+    if game.players[0] == user_id:
+        keyboard.append([InlineKeyboardButton("Начать игру", callback_data=f"start_room_{room_id}")])
+    
+    keyboard.extend([
+        [InlineKeyboardButton("Присоединиться", callback_data=f"join_room_{room_id}")],
+        [InlineKeyboardButton("Выйти", callback_data=f"leave_room_{room_id}")]
+    ])
+    
+    await query.edit_message_text(
+        f"Комната {room_id}\nИгроков: {len(game.players)}/4\n\nИгроки:\n{players_text}",
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
+    
+    await query.answer("Вы присоединились!")
+
+async def start_room(update: Update, context: ContextTypes.DEFAULT_TYPE, room_id: str):
+    query = update.callback_query
+    user_id = query.from_user.id
+    
+    if room_id not in active_games:
+        await query.answer("Комната не найдена")
+        return
+    
+    game = active_games[room_id]
+    
+    if game.players[0] != user_id:
+        await query.answer("Только создатель может начать игру")
+        return
+    
+    if len(game.players) < 4:
+        await query.answer("Нужно 4 игрока")
+        return
+    
+    success, message = game.start_game()
+    if success:
+        theme_names = {'queen': 'Дамы', 'king': 'Короли', 'ace': 'Тузы'}
+        
+        for player_id in game.players:
+            try:
+                hand = game.player_hands.get(player_id, [])
+                hand_text = ", ".join([theme_names.get(card, card) for card in hand])
+                
+                await context.bot.send_message(
+                    player_id,
+                    f"🎮 Игра началась!\n🎯 Тема: {theme_names.get(game.theme)}\n🎴 Твои карты: {hand_text}\n🔫 Револьвер заряжен!"
+                )
+            except:
+                pass
+        
+        await show_game_state(game, context)
+    else:
+        await query.answer(message)
 
 async def show_move_interface(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -448,57 +578,54 @@ async def show_game_state(game, context):
         except Exception as e:
             logger.error(f"Ошибка отправки сообщения игроку {player_id}: {e}")
 
-# Остальные функции (create_room, join_room, start_room, etc.) остаются похожими, 
-# но добавлю обработку новых callback'ов
-
-async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def leave_room(update: Update, context: ContextTypes.DEFAULT_TYPE, room_id: str):
     query = update.callback_query
-    await query.answer()
-    
-    data = query.data
     user_id = query.from_user.id
     
-    try:
-        if data == "create_room":
-            await create_room(update, context)
-        elif data == "show_rules":
-            await show_rules(update, context)
-        elif data == "join_game":
-            await join_game_info(update, context)
-        elif data == "back_to_main":
-            await back_to_main(update, context)
-        elif data.startswith("join_room_"):
-            room_id = data.split("_")[2]
-            await join_room(update, context, room_id)
-        elif data.startswith("start_room_"):
-            room_id = data.split("_")[2]
-            await start_room(update, context, room_id)
-        elif data == "make_move":
-            await show_move_interface(update, context)
-        elif data.startswith("claim_cards_"):
-            card_data = data.split("_")[2]
-            await process_card_claim(update, context, card_data)
-        elif data.startswith("final_move_"):
-            # Обработка final_move_2_queen
-            parts = data.split("_")
-            card_count = int(parts[2])
-            card_type = parts[3]
-            await finalize_move(update, context, card_count, card_type)
-        elif data == "challenge":
-            await challenge_handler(update, context)
-        elif data.startswith("leave_room_"):
-            room_id = data.split("_")[2]
-            await leave_room(update, context, room_id)
-        elif data == "back_to_game":
-            game = await find_user_game(user_id)
-            if game:
-                await show_game_state(game, context)
-            
-    except Exception as e:
-        logger.error(f"Ошибка в callback: {e}")
-        await query.answer("Ошибка")
+    if room_id not in active_games:
+        await query.answer("Комната не найдена")
+        return
+    
+    game = active_games[room_id]
+    
+    if user_id not in game.players:
+        await query.answer("Вы не в комнате")
+        return
+    
+    username = next((name for i, pid in enumerate(game.players) if pid == user_id), "Игрок")
+    game.remove_player(user_id)
+    
+    if len(game.players) == 0:
+        del active_games[room_id]
+        await query.edit_message_text("Вы вышли. Комната удалена.")
+    else:
+        # Уведомляем остальных
+        await notify_players(game, context, f"{username} вышел из комнаты")
+        
+        players_text = "\n".join([f"• {name}" for name in game.player_usernames])
+        keyboard = [
+            [InlineKeyboardButton("Присоединиться", callback_data=f"join_room_{room_id}")],
+            [InlineKeyboardButton("Выйти", callback_data=f"leave_room_{room_id}")]
+        ]
+        
+        await query.edit_message_text(
+            f"Комната {room_id}\nИгроков: {len(game.players)}/4\n\nИгроки:\n{players_text}",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
 
-# Добавляем недостающие функции
+async def find_user_game(user_id: int):
+    for game in active_games.values():
+        if user_id in game.players:
+            return game
+    return None
+
+async def notify_players(game, context, message):
+    for player_id in game.players:
+        try:
+            await context.bot.send_message(player_id, message)
+        except:
+            pass
+
 async def show_rules(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     rules_text = (
@@ -525,14 +652,11 @@ async def back_to_main(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ]
     await query.edit_message_text("Главное меню:", reply_markup=InlineKeyboardMarkup(keyboard))
 
-# Остальные функции (create_room, join_room, start_room, leave_room, find_user_game, notify_players) 
-# остаются без изменений, как в предыдущем коде
-
 def main():
     application = Application.builder().token(BOT_TOKEN).build()
     
     application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("join", join_command))
+    application.add_handler(CommandHandler("join", join_command))  # Теперь функция определена
     application.add_handler(CallbackQueryHandler(handle_callback))
     
     logger.info("Бот запущен")
