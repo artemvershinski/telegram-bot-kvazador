@@ -6,6 +6,19 @@ import asyncio
 from datetime import datetime, time
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
+from flask import Flask
+import threading
+
+# Инициализация Flask для Render.com
+app = Flask(__name__)
+
+@app.route('/')
+def home():
+    return "Bot is running!"
+
+@app.route('/health')
+def health():
+    return "OK"
 
 logging.basicConfig(
     level=logging.INFO,
@@ -606,7 +619,7 @@ async def leave_room(update: Update, context: ContextTypes.DEFAULT_TYPE, room_id
         await query.answer("Вы не в комнате")
         return
     
-    # ИСПРАВЛЕНИЕ: правильно получаем username
+    # Правильно получаем username
     username = None
     for i, pid in enumerate(game.players):
         if pid == user_id:
@@ -735,6 +748,10 @@ def schedule_cleanup_tasks(application):
     if job_queue:
         job_queue.run_repeating(cleanup_callback, interval=60, first=10)  # Каждую минуту
 
+def run_flask():
+    """Запуск Flask сервера для Render.com"""
+    app.run(host='0.0.0.0', port=10000)
+
 def main():
     application = Application.builder().token(BOT_TOKEN).build()
     
@@ -751,4 +768,9 @@ def main():
     application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":
+    # Запускаем Flask в отдельном потоке для Render.com
+    flask_thread = threading.Thread(target=run_flask, daemon=True)
+    flask_thread.start()
+    
+    # Запускаем бота
     main()
