@@ -1,2 +1,1 @@
-# telegram-bot-kvazador
-tg bot: @kvzdr_bot
+@werb_robot в телеграм
