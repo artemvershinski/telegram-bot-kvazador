@@ -750,9 +750,12 @@ def schedule_cleanup_tasks(application):
 
 def run_flask():
     """Запуск Flask сервера для Render.com"""
-    app.run(host='0.0.0.0', port=10000)
+    port = int(os.environ.get('PORT', 10000))
+    logger.info(f"Запуск Flask сервера на порту {port}")
+    app.run(host='0.0.0.0', port=port, debug=False, use_reloader=False)
 
-def main():
+def run_bot():
+    """Запуск Telegram бота"""
     application = Application.builder().token(BOT_TOKEN).build()
     
     application.add_handler(CommandHandler("start", start))
@@ -762,15 +765,19 @@ def main():
     # Планируем задачи очистки
     schedule_cleanup_tasks(application)
     
-    logger.info("Бот запущен")
-    
-    # Всегда используем поллинг для простоты
+    logger.info("Telegram бот запущен")
     application.run_polling(allowed_updates=Update.ALL_TYPES)
 
-if __name__ == "__main__":
-    # Запускаем Flask в отдельном потоке для Render.com
+def main():
+    """Основная функция запуска"""
+    logger.info("Запуск приложения...")
+    
+    # Запускаем Flask в отдельном потоке
     flask_thread = threading.Thread(target=run_flask, daemon=True)
     flask_thread.start()
     
-    # Запускаем бота
+    # Запускаем бота в основном потоке
+    run_bot()
+
+if __name__ == "__main__":
     main()
