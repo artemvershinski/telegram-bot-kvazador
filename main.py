@@ -4,8 +4,6 @@ import random
 import string
 import asyncio
 from datetime import datetime, time
-import threading
-import time as time_module
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
 
@@ -20,7 +18,6 @@ if not BOT_TOKEN:
     raise ValueError("BOT_TOKEN не установлен")
 
 active_games = {}
-game_cleanup_scheduled = False
 
 class LiarsBarGame:
     def __init__(self, game_id: str, creator_id: int):
@@ -609,7 +606,16 @@ async def leave_room(update: Update, context: ContextTypes.DEFAULT_TYPE, room_id
         await query.answer("Вы не в комнате")
         return
     
-    username = next((name for i, pid in enumerate(game.players) if pid == user_id), "Игрок")
+    # ИСПРАВЛЕНИЕ: правильно получаем username
+    username = None
+    for i, pid in enumerate(game.players):
+        if pid == user_id:
+            username = game.player_usernames[i]
+            break
+    
+    if not username:
+        username = "Игрок"
+    
     game.remove_player(user_id)
     
     if len(game.players) == 0:
