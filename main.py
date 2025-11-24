@@ -4,10 +4,12 @@ import asyncio
 import json
 import random
 import string
+import threading
 from typing import Dict, List
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
 import asyncpg
+from flask import Flask
 
 # Настройка логирования
 logging.basicConfig(
@@ -24,6 +26,21 @@ if not BOT_TOKEN:
     raise ValueError("BOT_TOKEN не установлен")
 if not DATABASE_URL:
     raise ValueError("DATABASE_URL не установлен")
+
+# Flask app для health checks
+app = Flask(__name__)
+
+@app.route('/')
+def home():
+    return "Bot is running"
+
+@app.route('/health')
+def health():
+    return "OK"
+
+def run_flask():
+    port = int(os.environ.get('PORT', 5000))
+    app.run(host='0.0.0.0', port=port)
 
 # ========== DATABASE КЛАСС ==========
 class Database:
@@ -322,6 +339,8 @@ class WerbHubBot:
             elif data.startswith("leave_room_"):
                 room_id = data.split("_")[2]
                 await self.leave_room(update, context, room_id)
+            elif data == "waiting":
+                await query.answer("Ожидаем остальных игроков...")
         except Exception as e:
             logger.error(f"Ошибка в callback: {e}")
             await query.edit_message_text("Ошибка. Попробуйте снова.")
@@ -343,7 +362,6 @@ class WerbHubBot:
             players_text = "\n".join([f"• {username}" for username in game.player_usernames])
             
             keyboard = [
-                [InlineKeyboardButton("Присоединиться", callback_data=f"join_room_{room_id}")],
                 [InlineKeyboardButton("Начать игру", callback_data=f"start_room_{room_id}")],
                 [InlineKeyboardButton("Выйти", callback_data=f"leave_room_{room_id}")]
             ]
@@ -390,6 +408,12 @@ class WerbHubBot:
             # УВЕДОМЛЕНИЕ ДЛЯ ВСЕХ ИГРОКОВ
             await self.notify_players(game, context, f"@{username} присоединился к комнате")
             
+            # УДАЛЯЕМ СТАРОЕ СООБЩЕНИЕ И ОТПРАВЛЯЕМ НОВОЕ
+            try:
+                await query.delete_message()
+            except:
+                pass
+                
             # Обновляем сообщение у всех игроков
             await self.update_room_for_all_players(game, context)
             
@@ -417,18 +441,31 @@ class WerbHubBot:
             game.remove_player(user_id)
             await self.db.update_game(room_id, game.to_dict())
             
-            # УВЕДОМЛЕНИЕ ДЛЯ ВСЕХ ИГРОКОВ
-            await self.notify_players(game, context, f"{username} вышел из комнаты")
+            # УДАЛЯЕМ СТАРОЕ СООБЩЕНИЕ
+            try:
+                await query.delete_message()
+            except:
+                pass
             
-            # Если комната пустая, удаляем ее
-            if len(game.players) == 0:
-                del self.active_games[room_id]
-                await query.edit_message_text("Вы вышли из комнаты. Комната удалена.")
-            else:
+            # УВЕДОМЛЕНИЕ ДЛЯ ВСЕХ ИГРОКОВ
+            if len(game.players) > 0:
+                await self.notify_players(game, context, f"{username} вышел из комнаты")
                 # Обновляем сообщение у оставшихся игроков
                 await self.update_room_for_all_players(game, context)
-                await query.edit_message_text("Вы вышли из комнаты")
-                
+            
+            # Сообщение для вышедшего игрока
+            if len(game.players) == 0:
+                del self.active_games[room_id]
+                await context.bot.send_message(
+                    chat_id=user_id,
+                    text="Вы вышли из комнаты. Комната удалена."
+                )
+            else:
+                await context.bot.send_message(
+                    chat_id=user_id,
+                    text="Вы вышли из комнаты"
+                )
+                    
         except Exception as e:
             logger.error(f"Ошибка при выходе из комнаты: {e}")
             await update.callback_query.answer("Ошибка при выходе")
@@ -442,12 +479,12 @@ class WerbHubBot:
                 try:
                     keyboard = []
                     if player_id == game.players[0]:  # создатель
-                        keyboard.append([InlineKeyboardButton("Начать игру", callback_data=f"start_room_{game.game_id}")])
+                        if len(game.players) == 4:
+                            keyboard.append([InlineKeyboardButton("Начать игру", callback_data=f"start_room_{game.game_id}")])
+                        else:
+                            keyboard.append([InlineKeyboardButton("Ожидание игроков...", callback_data="waiting")])
                     
-                    keyboard.extend([
-                        [InlineKeyboardButton("Присоединиться", callback_data=f"join_room_{game.game_id}")],
-                        [InlineKeyboardButton("Выйти", callback_data=f"leave_room_{game.game_id}")]
-                    ])
+                    keyboard.append([InlineKeyboardButton("Выйти", callback_data=f"leave_room_{game.game_id}")])
                     
                     await context.bot.send_message(
                         chat_id=player_id,
@@ -694,6 +731,10 @@ class WerbHubBot:
         )
 
 def main():
+    # Запускаем Flask в отдельном потоке
+    flask_thread = threading.Thread(target=run_flask, daemon=True)
+    flask_thread.start()
+    
     bot = WerbHubBot()
     
     loop = asyncio.new_event_loop()
