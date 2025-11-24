@@ -5,6 +5,14 @@ import random
 import string
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
+from flask import Flask
+
+# Инициализация Flask для Render.com
+app = Flask(__name__)
+
+@app.route('/')
+def home():
+    return "Bot is running!"
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -474,7 +482,26 @@ def main():
     application.add_handler(CallbackQueryHandler(handle_callback))
     
     logger.info("Бот запущен")
-    application.run_polling()
+    
+    # Для Render.com используем вебхуки, для локальной разработки - поллинг
+    if os.getenv('RENDER'):
+        # Вебхук для продакшена на Render.com
+        webhook_url = f"https://{os.getenv('RENDER_EXTERNAL_HOSTNAME')}/{BOT_TOKEN}"
+        application.run_webhook(
+            listen="0.0.0.0",
+            port=int(os.environ.get('PORT', 10000)),
+            url_path=BOT_TOKEN,
+            webhook_url=webhook_url
+        )
+    else:
+        # Поллинг для локальной разработки
+        application.run_polling()
 
 if __name__ == "__main__":
-    main()
+    # Запускаем Flask для здоровья приложения на Render
+    if os.getenv('RENDER'):
+        import threading
+        threading.Thread(target=main, daemon=True).start()
+        app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 10000)))
+    else:
+        main()
