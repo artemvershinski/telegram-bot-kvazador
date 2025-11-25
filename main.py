@@ -46,6 +46,7 @@ class LiarsBarGame:
         self.deck = []
         self.last_move_player_id = None
         self.last_activity = datetime.now()
+        self.selected_cards = []  # Для хранения выбранных карт перед ходом
         
     def create_deck(self):
         self.deck = []
@@ -69,11 +70,18 @@ class LiarsBarGame:
             self.players.remove(player_id)
             self.player_usernames.pop(index)
             self.last_activity = datetime.now()
+            
+            # Если игрок был текущим, переходим к следующему
+            if index == self.current_player_index:
+                self.current_player_index = self.current_player_index % len(self.players)
+            elif index < self.current_player_index:
+                self.current_player_index -= 1
+                
             return True
         return False
     
     def start_game(self):
-        if len(self.players) < 4:
+        if len(self.players) < 2:
             return False, "Недостаточно игроков"
         
         self.game_state = "playing"
@@ -89,6 +97,18 @@ class LiarsBarGame:
         
         # Раздача карт
         cards_per_player = 5
+        total_cards_needed = len(self.players) * cards_per_player
+        
+        # Если в колоде недостаточно карт, создаем дополнительную колоду
+        while len(self.deck) < total_cards_needed:
+            additional_deck = []
+            additional_deck.extend(['queen'] * 6)
+            additional_deck.extend(['king'] * 6)
+            additional_deck.extend(['ace'] * 6)
+            additional_deck.extend(['joker'] * 2)
+            random.shuffle(additional_deck)
+            self.deck.extend(additional_deck)
+        
         for i, player_id in enumerate(self.players):
             start_index = i * cards_per_player
             end_index = start_index + cards_per_player
@@ -97,7 +117,7 @@ class LiarsBarGame:
         self.last_activity = datetime.now()
         return True, "Игра началась"
     
-    def play_cards(self, player_id: int, card_count: int, claimed_cards: list):
+    def play_cards(self, player_id: int, card_count: int, selected_cards: list):
         if self.players[self.current_player_index] != player_id:
             return False, "Не ваш ход"
         
@@ -108,22 +128,34 @@ class LiarsBarGame:
         if card_count > len(hand):
             return False, f"У тебя только {len(hand)} карт"
         
-        # Берем реальные карты из руки
-        actual_cards = random.sample(hand, card_count)
+        # Проверяем, что выбранные карты есть в руке
+        for card in selected_cards:
+            if card not in hand:
+                return False, f"У тебя нет карты {card}"
+        
+        # Берем реальные карты из руки (выбранные игроком)
+        actual_cards = selected_cards[:card_count]
+        
+        # Удаляем выбранные карты из руки
         for card in actual_cards:
-            hand.remove(card)
+            if card in hand:
+                hand.remove(card)
+        
+        # ВСЕГДА заявляем карты текущей темы, независимо от того, что на самом деле
+        claimed_cards = [self.theme] * card_count
         
         self.table_cards.append({
             'player_id': player_id,
             'card_count': card_count,
-            'claimed_cards': claimed_cards,  # То, что игрок заявил
-            'actual_cards': actual_cards,    # То, что на самом деле
+            'claimed_cards': claimed_cards,  # Всегда заявляем карты темы
+            'actual_cards': actual_cards,    # То, что на самом деле положили
             'timestamp': asyncio.get_event_loop().time()
         })
         
         self.last_move_player_id = player_id
         self.last_activity = datetime.now()
         
+        # Проверяем победу
         if len(hand) == 0:
             return True, "ПОБЕДА! Ты сбросил все карты"
         
@@ -138,7 +170,11 @@ class LiarsBarGame:
         last_move = self.table_cards[-1]
         last_player_id = last_move['player_id']
         
-        # Проверять может только следующий игрок после того, кто сделал ход
+        # Если осталось только 2 игрока, проверять может любой кроме того, кто сделал ход
+        if len(self.players) == 2:
+            return challenger_id != last_player_id, last_player_id
+        
+        # В обычном случае проверять может только следующий игрок
         last_player_index = self.players.index(last_player_id)
         next_player_index = (last_player_index + 1) % len(self.players)
         next_player_id = self.players[next_player_index]
@@ -163,27 +199,41 @@ class LiarsBarGame:
         
         if is_lying:
             # Игрок врал - проверяющий стреляет в него
-            shooter_id = last_player_id
+            shooter_id = challenger_id
             target_id = last_player_id
         else:
             # Игрок не врал - проверяющий стреляет в себя
             shooter_id = challenger_id
             target_id = challenger_id
         
-        result = self.fire_revolver(shooter_id)
+        result = self.fire_revolver(target_id)
         
-        # Перераздача карт и новая тема
-        self.theme = random.choice(['queen', 'king', 'ace'])
-        self.create_deck()
+        # Перераздача карт и новая тема только если игра продолжается
+        if len(self.players) > 1:
+            self.theme = random.choice(['queen', 'king', 'ace'])
+            self.create_deck()
+            
+            # Новая раздача карт всем игрокам
+            cards_per_player = 5
+            total_cards_needed = len(self.players) * cards_per_player
+            
+            # Если в колоде недостаточно карт, создаем дополнительную колоду
+            while len(self.deck) < total_cards_needed:
+                additional_deck = []
+                additional_deck.extend(['queen'] * 6)
+                additional_deck.extend(['king'] * 6)
+                additional_deck.extend(['ace'] * 6)
+                additional_deck.extend(['joker'] * 2)
+                random.shuffle(additional_deck)
+                self.deck.extend(additional_deck)
+            
+            for i, player_id in enumerate(self.players):
+                start_index = i * cards_per_player
+                end_index = start_index + cards_per_player
+                self.player_hands[player_id] = self.deck[start_index:end_index]
+            
+            self.table_cards = []
         
-        # Новая раздача карт всем игрокам
-        cards_per_player = 5
-        for i, player_id in enumerate(self.players):
-            start_index = i * cards_per_player
-            end_index = start_index + cards_per_player
-            self.player_hands[player_id] = self.deck[start_index:end_index]
-        
-        self.table_cards = []
         self.last_activity = datetime.now()
         
         return True, {
@@ -200,9 +250,17 @@ class LiarsBarGame:
         revolver = self.player_revolvers[player_id]
         
         if revolver['current_position'] == revolver['chamber']:
+            # Игрок выбывает
             index = self.players.index(player_id)
             self.players.remove(player_id)
             self.player_usernames.pop(index)
+            
+            # Корректируем текущего игрока если нужно
+            if index < self.current_player_index:
+                self.current_player_index -= 1
+            elif index == self.current_player_index and self.players:
+                self.current_player_index = self.current_player_index % len(self.players)
+            
             self.last_activity = datetime.now()
             return False
         else:
@@ -211,6 +269,8 @@ class LiarsBarGame:
             return True
     
     def get_current_player(self):
+        if not self.players:
+            return None
         return self.players[self.current_player_index]
     
     def get_player_username(self, player_id: int):
@@ -230,6 +290,60 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"Привет {update.effective_user.first_name}!\nWerb Hub - Liar's Bar\n\nВыбери действие:",
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
+
+async def stop_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    username = update.effective_user.username or update.effective_user.first_name
+    
+    game = await find_user_game(user_id)
+    if not game:
+        await update.message.reply_text("Вы не в активной игре")
+        return
+    
+    room_id = game.game_id
+    
+    # Удаляем игрока из игры
+    game.remove_player(user_id)
+    
+    if len(game.players) < 2:
+        # Если остался 1 игрок - завершаем игру
+        if game.players:
+            winner = game.get_player_username(game.players[0])
+            await notify_players(game, context, f"🎉 ПОБЕДИТЕЛЬ: {winner}!")
+        if room_id in active_games:
+            del active_games[room_id]
+        await update.message.reply_text("Вы вышли из игры. Комната удалена.")
+    else:
+        # Перезапускаем игру с оставшимися игроками
+        game.game_state = "waiting"
+        game.theme = None
+        game.table_cards = []
+        game.player_hands = {}
+        game.player_revolvers = {}
+        
+        # Уведомляем остальных
+        await notify_players(game, context, f"🚪 {username} вышел из игры. Перезапуск игры...")
+        
+        # Запускаем игру заново
+        success, message = game.start_game()
+        if success:
+            theme_names = {'queen': 'Дамы', 'king': 'Короли', 'ace': 'Тузы'}
+            
+            for player_id in game.players:
+                try:
+                    hand = game.player_hands.get(player_id, [])
+                    hand_text = ", ".join([theme_names.get(card, card) for card in hand])
+                    
+                    await context.bot.send_message(
+                        player_id,
+                        f"🔄 Игра перезапущена!\n🎯 Тема: {theme_names.get(game.theme)}\n🎴 Твои карты: {hand_text}\n🔫 Револьвер заряжен!"
+                    )
+                except:
+                    pass
+            
+            await show_game_state(game, context)
+        
+        await update.message.reply_text("Вы вышли из игры. Игра перезапущена для оставшихся игроков.")
 
 async def join_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
@@ -269,14 +383,13 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await start_room(update, context, room_id)
         elif data == "make_move":
             await show_move_interface(update, context)
-        elif data.startswith("claim_cards_"):
+        elif data.startswith("select_card_"):
             card_data = data.split("_")[2]
-            await process_card_claim(update, context, card_data)
-        elif data.startswith("final_move_"):
-            parts = data.split("_")
-            card_count = int(parts[2])
-            card_type = parts[3]
-            await finalize_move(update, context, card_count, card_type)
+            await select_card_handler(update, context, card_data)
+        elif data == "confirm_move":
+            await confirm_move_handler(update, context)
+        elif data == "clear_selection":
+            await clear_selection_handler(update, context)
         elif data == "challenge":
             await challenge_handler(update, context)
         elif data.startswith("leave_room_"):
@@ -375,8 +488,8 @@ async def start_room(update: Update, context: ContextTypes.DEFAULT_TYPE, room_id
         await query.answer("Только создатель может начать игру")
         return
     
-    if len(game.players) < 4:
-        await query.answer("Нужно 4 игрока")
+    if len(game.players) < 2:
+        await query.answer("Нужно минимум 2 игрока")
         return
     
     success, message = game.start_game()
@@ -412,19 +525,38 @@ async def show_move_interface(update: Update, context: ContextTypes.DEFAULT_TYPE
         await query.answer("Не ваш ход")
         return
     
-    keyboard = [
-        [InlineKeyboardButton("1 карта", callback_data="claim_cards_1")],
-        [InlineKeyboardButton("2 карты", callback_data="claim_cards_2")],
-        [InlineKeyboardButton("3 карты", callback_data="claim_cards_3")],
-        [InlineKeyboardButton("Отмена", callback_data="back_to_game")]
-    ]
+    # Очищаем предыдущий выбор
+    game.selected_cards = []
+    
+    hand = game.player_hands.get(user_id, [])
+    theme_names = {'queen': 'Q', 'king': 'K', 'ace': 'A', 'joker': 'J'}
+    
+    # Создаем кнопки для выбора карт
+    keyboard = []
+    row = []
+    for i, card in enumerate(hand):
+        card_symbol = theme_names.get(card, card)
+        row.append(InlineKeyboardButton(card_symbol, callback_data=f"select_card_{i}"))
+        if len(row) == 3:  # 3 кнопки в ряд
+            keyboard.append(row)
+            row = []
+    if row:
+        keyboard.append(row)
+    
+    # Кнопки управления
+    keyboard.extend([
+        [InlineKeyboardButton("✅ Заявить", callback_data="confirm_move")],
+        [InlineKeyboardButton("🗑️ Очистить выбор", callback_data="clear_selection")],
+        [InlineKeyboardButton("🔙 Назад", callback_data="back_to_game")]
+    ])
     
     await query.edit_message_text(
-        "Сколько карт будешь класть?",
+        "🎴 Выбери карты для хода (макс. 3):\n\n"
+        "Выбранные карты: Нет",
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
 
-async def process_card_claim(update: Update, context: ContextTypes.DEFAULT_TYPE, card_count: str):
+async def select_card_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, card_index: str):
     query = update.callback_query
     user_id = query.from_user.id
     
@@ -433,27 +565,57 @@ async def process_card_claim(update: Update, context: ContextTypes.DEFAULT_TYPE,
         await query.answer("Вы не в игре")
         return
     
-    card_count_int = int(card_count)
+    index = int(card_index)
+    hand = game.player_hands.get(user_id, [])
     
-    # Показываем интерфейс выбора карт
-    theme_names = {'queen': 'Q', 'king': 'K', 'ace': 'A'}
-    current_theme = theme_names.get(game.theme, game.theme)
+    if index >= len(hand):
+        await query.answer("Неверная карта")
+        return
     
-    keyboard = [
-        [InlineKeyboardButton(f"{current_theme}", callback_data=f"final_move_{card_count_int}_{game.theme}")],
-        [InlineKeyboardButton("Q", callback_data=f"final_move_{card_count_int}_queen")],
-        [InlineKeyboardButton("K", callback_data=f"final_move_{card_count_int}_king")],
-        [InlineKeyboardButton("A", callback_data=f"final_move_{card_count_int}_ace")],
-        [InlineKeyboardButton("J", callback_data=f"final_move_{card_count_int}_joker")],
-        [InlineKeyboardButton("Смешанные", callback_data=f"final_move_{card_count_int}_mixed")],
-    ]
+    selected_card = hand[index]
+    
+    # Проверяем, не превышен ли лимит
+    if len(game.selected_cards) >= 3:
+        await query.answer("Можно выбрать максимум 3 карты")
+        return
+    
+    # Добавляем карту в выбранные
+    game.selected_cards.append(selected_card)
+    
+    # Обновляем интерфейс
+    theme_names = {'queen': 'Q', 'king': 'K', 'ace': 'A', 'joker': 'J'}
+    selected_text = ", ".join([theme_names.get(card, card) for card in game.selected_cards])
+    
+    hand = game.player_hands.get(user_id, [])
+    keyboard = []
+    row = []
+    for i, card in enumerate(hand):
+        card_symbol = theme_names.get(card, card)
+        # Помечаем выбранные карты
+        if card in game.selected_cards:
+            card_symbol = f"✅{card_symbol}"
+        row.append(InlineKeyboardButton(card_symbol, callback_data=f"select_card_{i}"))
+        if len(row) == 3:
+            keyboard.append(row)
+            row = []
+    if row:
+        keyboard.append(row)
+    
+    keyboard.extend([
+        [InlineKeyboardButton("✅ Заявить", callback_data="confirm_move")],
+        [InlineKeyboardButton("🗑️ Очистить выбор", callback_data="clear_selection")],
+        [InlineKeyboardButton("🔙 Назад", callback_data="back_to_game")]
+    ])
     
     await query.edit_message_text(
-        f"Выбери какие карты будешь заявлять ({card_count} шт.):",
+        f"🎴 Выбери карты для хода (макс. 3):\n\n"
+        f"Выбранные карты: {selected_text}",
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
+    
+    await query.answer(f"Выбрана карта: {theme_names.get(selected_card, selected_card)}")
 
-async def finalize_move(update: Update, context: ContextTypes.DEFAULT_TYPE, card_count: int, card_type: str):
+async def clear_selection_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     user_id = query.from_user.id
     
@@ -462,15 +624,28 @@ async def finalize_move(update: Update, context: ContextTypes.DEFAULT_TYPE, card
         await query.answer("Вы не в игре")
         return
     
-    # Создаем список заявленных карт
-    if card_type == "mixed":
-        # Для смешанных - случайный набор
-        themes = ['queen', 'king', 'ace', 'joker']
-        claimed_cards = [random.choice(themes) for _ in range(card_count)]
-    else:
-        claimed_cards = [card_type] * card_count
+    game.selected_cards = []
     
-    success, message = game.play_cards(user_id, card_count, claimed_cards)
+    await show_move_interface(update, context)
+    await query.answer("Выбор очищен")
+
+async def confirm_move_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    user_id = query.from_user.id
+    
+    game = await find_user_game(user_id)
+    if not game:
+        await query.answer("Вы не в игре")
+        return
+    
+    if not game.selected_cards:
+        await query.answer("Сначала выбери карты")
+        return
+    
+    card_count = len(game.selected_cards)
+    selected_cards = game.selected_cards.copy()
+    
+    success, message = game.play_cards(user_id, card_count, selected_cards)
     
     if success:
         if "ПОБЕДА" in message:
@@ -482,7 +657,7 @@ async def finalize_move(update: Update, context: ContextTypes.DEFAULT_TYPE, card
         
         # Уведомляем всех о ходе
         theme_names = {'queen': 'Дамы', 'king': 'Короли', 'ace': 'Тузы', 'joker': 'Джокеры'}
-        claimed_text = ", ".join([theme_names.get(card, card) for card in claimed_cards])
+        claimed_text = ", ".join([theme_names.get(card, card) for card in [game.theme] * card_count])
         
         move_message = (
             f"🎴 {game.get_player_username(user_id)} походил!\n"
@@ -540,9 +715,9 @@ async def challenge_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await asyncio.sleep(1.5)
         
         # Анимация выстрела
-        shooter_username = game.get_player_username(result['shooter_id'])
+        target_username = game.get_player_username(result['target_id'])
         shoot_messages = [
-            f"🔫 {shooter_username} берет револьвер...",
+            f"🔫 {target_username} берет револьвер...",
             f"💀 Подносит к виску...",
             f"🎯 Нажимает на курок..."
         ]
@@ -554,9 +729,25 @@ async def challenge_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if result['survived']:
             await notify_players(game, context, "✅ ОСЕЧКА!")
             await asyncio.sleep(1)
+            
+            # Если остался только 1 игрок - он побеждает
+            if len(game.players) == 1:
+                winner = game.get_player_username(game.players[0])
+                await notify_players(game, context, f"🎉 ПОБЕДИТЕЛЬ: {winner}!")
+                if game.game_id in active_games:
+                    del active_games[game.game_id]
+                return
         else:
-            await notify_players(game, context, f"💥 ВЫСТРЕЛ! {shooter_username} выбывает!")
+            await notify_players(game, context, f"💥 ВЫСТРЕЛ! {target_username} выбывает!")
             await asyncio.sleep(3)
+            
+            # Если остался только 1 игрок - он побеждает
+            if len(game.players) == 1:
+                winner = game.get_player_username(game.players[0])
+                await notify_players(game, context, f"🎉 ПОБЕДИТЕЛЬ: {winner}!")
+                if game.game_id in active_games:
+                    del active_games[game.game_id]
+                return
         
         # Показываем новое состояние игры
         if len(game.players) > 1:
@@ -570,6 +761,9 @@ async def challenge_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def show_game_state(game, context):
     current_player = game.get_current_player()
+    if not current_player:
+        return
+        
     theme_names = {'queen': 'Дамы', 'king': 'Короли', 'ace': 'Тузы'}
     
     for player_id in game.players:
@@ -667,12 +861,16 @@ async def show_rules(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     rules_text = (
         "Правила Liar's Bar:\n\n"
-        "• 4 игрока\n• Каждому по 5 карт\n• Тема: Дамы, Короли или Тузы\n"
-        "• Ход: положи 1-3 карты рубашкой вверх\n• Можно обманывать!\n"
+        "• 2-4 игрока\n• Каждому по 5 карт\n• Тема: Дамы, Короли или Тузы\n"
+        "• Ход: положи 1-3 карты рубашкой вверх\n• Всегда заявляй карты текущей темы!\n"
         "• Следующий игрок может проверить предыдущего\n"
         "• Если проверка неудачная - русская рулетка\n"
         "• В револьвере 6 патронов, 1 боевой\n• Выбываешь при выстреле\n"
-        "• Последний выживший побеждает"
+        "• Последний выживший побеждает\n\n"
+        "Команды:\n"
+        "/start - главное меню\n"
+        "/join [ID] - присоединиться\n"
+        "/stop - выйти из текущей игры"
     )
     await query.edit_message_text(rules_text, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Назад", callback_data="back_to_main")]]))
 
@@ -760,6 +958,7 @@ def run_bot():
     
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("join", join_command))
+    application.add_handler(CommandHandler("stop", stop_command))
     application.add_handler(CallbackQueryHandler(handle_callback))
     
     # Планируем задачи очистки
